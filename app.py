@@ -38,9 +38,13 @@ for tab in tabs:
         if parsed:
             fy_data_map[tab] = parsed
             if "Trades" in parsed: 
-                # CRITICAL FIX for (c): Filter out IBKR's summary rows to prevent double counting
                 t_df = parsed["Trades"]
-                t_df = t_df[~t_df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
+                # FIX (c): Strictly exclude any row that isn't a direct trade 'Order'
+                # This prevents double-counting totals and 'Statement' rows
+                if 'DataDiscriminator' in t_df.columns:
+                    t_df = t_df[t_df['DataDiscriminator'] == 'Order']
+                else:
+                    t_df = t_df[~t_df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
                 all_trades.append(t_df)
     except: continue
 
@@ -51,10 +55,11 @@ if all_trades:
         trades = pd.concat(all_trades, ignore_index=True)
         trades['Quantity'] = pd.to_numeric(trades['Quantity'], errors='coerce').fillna(0)
         trades['T. Price'] = pd.to_numeric(trades['T. Price'], errors='coerce').fillna(0)
+        # Handle IBKR's Date/Time column which is often '2025-08-06, 19:34:03'
         trades['Date/Time'] = pd.to_datetime(trades['Date/Time'].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
 
-        # Split Adjustments
+        # Split adjustments (NVDA/SMCI)
         trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'Quantity'] *= 10
         trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'T. Price'] /= 10
         trades.loc[(trades['Symbol'] == 'SMCI') & (trades['Date/Time'] < '2024-10-01'), 'Quantity'] *= 10
@@ -88,6 +93,7 @@ c1, c2, c3 = st.columns(3)
 def get_metric(section, keys, df_dict):
     if section not in df_dict: return 0.0
     df = df_dict[section]
+    # Filter 'Total' rows for capital metrics
     df = df[~df.apply(lambda r: r.astype(str).str.contains('Total|Subtotal', case=False).any(), axis=1)]
     target = next((c for c in df.columns if any(k.lower() in c.lower() for k in keys)), None)
     return pd.to_numeric(df[target], errors='coerce').sum() if target else 0.0
@@ -101,7 +107,7 @@ st.divider()
 cur_date = datetime.now().strftime('%d %b %Y')
 
 if not df_lots.empty:
-    unique_syms = df_lots['Symbol'].unique().tolist()
+    unique_syms = sorted(df_lots['Symbol'].unique().tolist())
     prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
     if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
 
@@ -110,37 +116,38 @@ if not df_lots.empty:
         if subset.empty: return st.info("No holdings.")
         subset['Cost'] = subset['qty'] * subset['price']
         agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum'}).reset_index()
-        agg['Avg Buy'] = agg['Cost'] / agg['qty']
-        agg['Price'] = agg['Symbol'].map(prices).fillna(0)
-        agg['Value'] = agg['qty'] * agg['Price']
-        agg['P/L $'] = agg['Value'] - agg['Cost']
+        agg['Avg Buy Price'] = agg['Cost'] / agg['qty']
+        agg['Current Price'] = agg['Symbol'].map(prices).fillna(0)
+        agg['Current Value'] = agg['qty'] * agg['Current Price']
+        agg['P/L $'] = agg['Current Value'] - agg['Cost']
         agg['P/L %'] = (agg['P/L $'] / agg['Cost']) * 100
         
         # FIX (a): Change index to start from 1
-        agg.index = agg.index + 1
+        agg.index = range(1, len(agg) + 1)
         
-        st.dataframe(agg.style.format({"Avg Buy": "${:.2f}", "Price": "${:.2f}", "Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"}), use_container_width=True)
-        st.write(f"**Total {label} Value:** `${agg['Value'].sum():,.2f}`")
+        st.dataframe(agg.style.format({
+            "Avg Buy Price": "${:.2f}", "Current Price": "${:.2f}", "Current Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
+        }), use_container_width=True)
+        st.write(f"**Total {label} Value:** `${agg['Current Value'].sum():,.2f}`")
 
     show_sec(df_lots.copy(), "1. Current Global Holdings")
     show_sec(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
     show_sec(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
 
-    # --- 6. FIFO CALCULATOR FIX (d) ---
+    # --- 6. FIFO CALCULATOR & CLEAN RESIDUALS (d) ---
     st.divider()
-    st.header("🧮 FIFO Calculator & Residual Analysis")
+    st.header("🧮 FIFO Selling Calculator")
     ca, cb = st.columns([1, 2])
-    stock = ca.selectbox("Pick Stock", unique_syms)
+    stock = ca.selectbox("Select Ticker", unique_syms)
     s_lots = df_lots[df_lots['Symbol'] == stock].sort_values('date')
     tot = s_lots['qty'].sum()
     
-    # Restored radio button
-    calc_mode = ca.radio("Select Sale Mode", ["Units", "Percentage"])
+    calc_mode = ca.radio("Sale Mode", ["Specific Units", "Percentage of Holding"])
     
-    if calc_mode == "Units":
+    if calc_mode == "Specific Units":
         amt = cb.slider("Units to Sell", 0.0, float(tot), float(tot*0.25))
     else:
-        pct = cb.slider("Percentage to Sell", 0, 100, 25)
+        pct = cb.slider("Percentage (%)", 0, 100, 25)
         amt = tot * (pct / 100)
         
     t_p_pct = cb.number_input("Target Profit %", value=105.0)
@@ -152,14 +159,21 @@ if not df_lots.empty:
             take = min(l['qty'], tq)
             sc += take * l['price']
             tq -= take
-        res = (sc * (1 + t_p_pct/100)) / amt
-        st.success(f"To achieve {t_p_pct}% profit, sell **{amt:.4f} units** at **${res:.2f}**")
+        res_price = (sc * (1 + t_p_pct/100)) / amt
+        st.success(f"**Target Sell Price:** Sell {amt:.4f} units at **${res_price:.2f}** to achieve {t_p_pct}% profit.")
         
-        # Restored Residual Info
+        # CLEAN RESIDUAL INFO
         rem_q = tot - amt
         if rem_q > 0:
+            st.markdown("---")
+            st.markdown("#### 💎 Residual Portfolio Strategy")
             rem_cost = (s_lots['qty'] * s_lots['price']).sum() - sc
             rem_avg = rem_cost / rem_q
             live_now = prices[stock]
             rem_pl = (live_now - rem_avg) * rem_q
-            st.info(f"**Residual Portfolio Advice:** Remaining: **{rem_q:.2f}** units | New Avg Price: **${rem_avg:.2f}** | Status: **${rem_pl:.2f}**")
+            rem_pct = ((live_now / rem_avg) - 1) * 100
+            
+            c_r1, c_r2, c_r3 = st.columns(3)
+            c_r1.metric("Remaining Quantity", f"{rem_q:.2f} units")
+            c_r2.metric("New Avg Price", f"${rem_avg:.2f}")
+            c_r3.metric("Remaining P/L", f"${rem_pl:.2f}", f"{rem_pct:.2f}%")
