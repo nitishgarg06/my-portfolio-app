@@ -2,9 +2,8 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
 
-st.set_page_config(page_title="IBKR Pro Dashboard", layout="wide", page_icon="📈")
+st.set_page_config(page_title="IBKR Portfolio Pro", layout="wide", page_icon="📈")
 
 # --- 1. CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -18,77 +17,79 @@ def parse_ibkr_sheet(df):
         sec_df = df[df.iloc[:, 0] == name]
         header_row = sec_df[sec_df.iloc[:, 1] == 'Header']
         if not header_row.empty:
-            cols = [c for c in header_row.iloc[0, 2:].tolist() if c]
+            cols = [c for c in header_row.iloc[0, 2:].tolist() if c and c != 'nan']
             data = sec_df[sec_df.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(cols)]
             data.columns = cols
             sections[name] = data
     return sections
 
-# --- 2. DATA LOADING (Global) ---
+# --- 2. GLOBAL DATA LOADING ---
 tabs_to_read = ["FY24", "FY25", "FY26"]
-fy_data = {}
-all_trades, all_realized = [], []
+fy_data_map = {}
+all_trades_list = []
+all_perf_list = []
 
 for tab in tabs_to_read:
     try:
         raw_df = conn.read(worksheet=tab, ttl=0)
         parsed = parse_ibkr_sheet(raw_df)
-        fy_data[tab] = parsed
-        if "Trades" in parsed: all_trades.append(parsed["Trades"])
+        fy_data_map[tab] = parsed
+        if "Trades" in parsed: all_trades_list.append(parsed["Trades"])
         if "Realized & Unrealized Performance Summary" in parsed: 
-            all_realized.append(parsed["Realized & Unrealized Performance Summary"])
-    except: continue
+            all_perf_list.append(parsed["Realized & Unrealized Performance Summary"])
+    except Exception:
+        continue # Skip missing tabs or empty sheets
 
-st.title("🚀 Portfolio Pro-Analyst")
+st.title("🚀 IBKR Portfolio Pro-Analyst")
 
-# --- 3. REQUIREMENT (B): INVESTMENT SUMMARY (FY SPECIFIC) ---
+# --- 3. INVESTMENT SUMMARY (FY SPECIFIC) ---
 st.header("💰 Investment Capital")
-selected_fy = st.selectbox("Select Financial Year to view Funds Injected", tabs_to_read, index=len(tabs_to_read)-1)
+selected_fy = st.selectbox("Select Financial Year for Funds Injected", tabs_to_read, index=len(tabs_to_read)-1)
 
-data_inv = fy_data.get(selected_fy, {})
+data_inv = fy_data_map.get(selected_fy, {})
 if "Deposits & Withdrawals" in data_inv:
     dw = data_inv["Deposits & Withdrawals"]
-    dw['Amount'] = pd.to_numeric(dw['Amount'], errors='coerce').fillna(0)
-    # Filter out 'Total' rows
-    actual_funds = dw[~dw['Currency'].astype(str).str.contains('Total', case=False, na=False)]
-    total_inv = actual_funds['Amount'].sum()
+    # Identify the correct column name for Amount (sometimes it varies)
+    amt_col = 'Amount' if 'Amount' in dw.columns else dw.columns[-1]
+    dw[amt_col] = pd.to_numeric(dw[amt_col], errors='coerce').fillna(0)
+    
+    # Filter out rows that are 'Total' summaries
+    actual_funds = dw[~dw.apply(lambda row: row.astype(str).str.contains('Total', case=False).any(), axis=1)]
+    total_inv = actual_funds[amt_col].sum()
     st.metric(f"Net Funds Injected ({selected_fy})", f"${total_inv:,.2f}")
 else:
     st.info(f"No deposit data found for {selected_fy}.")
 
-# --- 4. REQUIREMENT (A): HOLDINGS & CGT BREAKDOWN ---
+# --- 4. HOLDINGS & CGT BREAKDOWN ---
 st.divider()
 st.header("📊 Stock Summary & CGT Status")
 
-if all_trades:
-    df_trades = pd.concat(all_trades)
+if all_trades_list:
+    df_trades = pd.concat(all_trades_list, ignore_index=True)
     df_trades['Quantity'] = pd.to_numeric(df_trades['Quantity'], errors='coerce')
     df_trades['T. Price'] = pd.to_numeric(df_trades['T. Price'], errors='coerce')
     df_trades['Date/Time'] = pd.to_datetime(df_trades['Date/Time'])
     df_trades = df_trades.sort_values('Date/Time')
 
-    # Get Realized Profit Data
-    df_realized = pd.concat(all_realized) if all_realized else pd.DataFrame()
-    if not df_realized.empty:
-        df_realized['Realized Total'] = pd.to_numeric(df_realized['Realized Total'], errors='coerce').fillna(0)
-        realized_map = df_realized.groupby('Symbol')['Realized Total'].sum().to_dict()
-    else:
-        realized_map = {}
+    # Realized Profit Logic
+    realized_map = {}
+    if all_perf_list:
+        df_perf = pd.concat(all_perf_list, ignore_index=True)
+        if 'Realized Total' in df_perf.columns:
+            df_perf['Realized Total'] = pd.to_numeric(df_perf['Realized Total'], errors='coerce').fillna(0)
+            realized_map = df_perf.groupby('Symbol')['Realized Total'].sum().to_dict()
 
     symbols = df_trades['Symbol'].unique().tolist()
     today = pd.Timestamp.now()
     summary_list = []
 
     for sym in symbols:
-        # FIFO Logic for LT/ST
-        lots = [] # List of (date, qty, price)
-        stock_trades = df_trades[df_trades['Symbol'] == sym]
-        
-        for _, row in stock_trades.iterrows():
+        lots = [] 
+        stock_history = df_trades[df_trades['Symbol'] == sym]
+        for _, row in stock_history.iterrows():
             q = row['Quantity']
-            if q > 0: # Buy
-                lots.append({'date': row['Date/Time'], 'qty': q, 'price': row['T. Price']})
-            elif q < 0: # Sell
+            if q > 0: lots.append({'date': row['Date/Time'], 'qty': q, 'price': row['T. Price']})
+            elif q < 0:
                 sell_q = abs(q)
                 while sell_q > 0 and lots:
                     if lots[0]['qty'] <= sell_q:
@@ -98,7 +99,24 @@ if all_trades:
                         lots[0]['qty'] -= sell_q
                         sell_q = 0
         
-        # Categorize remaining lots
         lt_qty, st_qty, total_cost = 0, 0, 0
         for lot in lots:
-            total_cost += lot['qty'] *
+            total_cost += (lot['qty'] * lot['price'])
+            if (today - lot['date']).days > 365: lt_qty += lot['qty']
+            else: st_qty += lot['qty']
+        
+        total_qty = lt_qty + st_qty
+        if total_qty > 0.001:
+            avg_cost = total_cost / total_qty
+            summary_list.append({
+                "Symbol": sym, "Total Qty": round(total_qty, 4),
+                "Long-Term (LT)": round(lt_qty, 4), "Short-Term (ST)": round(st_qty, 4),
+                "Avg Cost": avg_cost, "Realized Profit": realized_map.get(sym, 0)
+            })
+
+    if summary_list:
+        df_final = pd.DataFrame(summary_list)
+        st.dataframe(df_final.style.format({"Avg Cost": "${:.2f}", "Realized Profit": "${:.2f}"}))
+        st.info(f"**CGT Summary:** {df_final['Long-Term (LT)'].sum():.2f} units are Long-Term (50% CGT Discount) and {df_final['Short-Term (ST)'].sum():.2f} units are Short-Term.")
+    else:
+        st.warning("No open positions found.")
