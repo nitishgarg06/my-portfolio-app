@@ -6,26 +6,23 @@ import yfinance as yf
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# --- 1. THE CONNECTION (BACK TO BASICS) ---
+# --- 1. THE CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def parse_ibkr_raw(df):
-    """The original parser logic that worked, but with string safety."""
+def safe_parse(df):
+    """Aggressive parser to handle empty cells and column shifts."""
     sections = {}
     if df is None or df.empty: return sections
-    
-    # Convert everything to string immediately to prevent 'float' errors during parsing
-    df = df.astype(str).apply(lambda x: x.str.strip())
+    df = df.astype(str).replace('nan', '').apply(lambda x: x.str.strip())
     
     for name in df.iloc[:, 0].unique():
-        if name in ['nan', '', 'Statement']: continue
+        if name in ['', 'Statement', 'Field Name']: continue
         sec_df = df[df.iloc[:, 0] == name]
         h_row = sec_df[sec_df.iloc[:, 1] == 'Header']
         d_rows = sec_df[sec_df.iloc[:, 1] == 'Data']
         
         if not h_row.empty and not d_rows.empty:
-            # We take the actual number of columns present in the data
-            cols = [c for c in h_row.iloc[0, 2:].tolist() if c and c != 'nan']
+            cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
             data = d_rows.iloc[:, 2:2+len(cols)]
             data.columns = cols
             sections[name] = data
@@ -38,9 +35,8 @@ all_trades = []
 
 for tab in tabs:
     try:
-        # We use the simplest read method possible
         raw = conn.read(worksheet=tab, ttl=0)
-        parsed = parse_ibkr_raw(raw)
+        parsed = safe_parse(raw)
         if parsed:
             fy_data_map[tab] = parsed
             if "Trades" in parsed: all_trades.append(parsed["Trades"])
@@ -53,10 +49,11 @@ if all_trades:
         trades = pd.concat(all_trades, ignore_index=True)
         trades['Quantity'] = pd.to_numeric(trades['Quantity'], errors='coerce').fillna(0)
         trades['T. Price'] = pd.to_numeric(trades['T. Price'], errors='coerce').fillna(0)
+        # Fix for AEDT/Date strings
         trades['Date/Time'] = pd.to_datetime(trades['Date/Time'].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
 
-        # Split adjustments (NVDA/SMCI)
+        # Splits
         trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'Quantity'] *= 10
         trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'T. Price'] /= 10
         trades.loc[(trades['Symbol'] == 'SMCI') & (trades['Date/Time'] < '2024-10-01'), 'Quantity'] *= 10
@@ -68,7 +65,7 @@ if all_trades:
             lots = []
             for _, row in trades[trades['Symbol'] == sym].iterrows():
                 if row['Quantity'] > 0: 
-                    lots.append({'date': row['Date/Time'], 'qty': row['Quantity'], 'price': row['T. Price']})
+                    lots.append({'date': row['date'] if 'date' in row else row['Date/Time'], 'qty': row['Quantity'], 'price': row['T. Price']})
                 elif row['Quantity'] < 0:
                     sq = abs(row['Quantity'])
                     while sq > 0 and lots:
@@ -79,90 +76,77 @@ if all_trades:
                 l['Type'] = "Long-Term" if (today - l['date']).days > 365 else "Short-Term"
                 holdings.append(l)
         df_lots = pd.DataFrame(holdings)
-    except: st.error("Error calculating FIFO lots.")
+    except Exception as e:
+        st.sidebar.error(f"Calculation Error: {e}")
 
-# --- 4. UI: FY PERFORMANCE ---
+# --- 4. TOP PERFORMANCE BAR ---
 st.title("🏦 Wealth Terminal")
 sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
 data_fy = fy_data_map.get(sel_fy, {})
 
-# Styling for Metrics
-st.markdown("<style>div[data-testid='stMetricValue'] { color: #00ffcc; font-weight: bold; }</style>", unsafe_allow_stdio=True)
-
 c1, c2, c3 = st.columns(3)
 
-# Capital (Safe Calculation)
-cap = 0.0
-if "Deposits & Withdrawals" in data_fy:
-    df_dw = data_fy["Deposits & Withdrawals"]
-    amt_col = 'Amount' if 'Amount' in df_dw.columns else df_dw.columns[-1]
-    clean_dw = df_dw[~df_dw.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
-    cap = pd.to_numeric(clean_dw[amt_col], errors='coerce').sum()
-c1.metric(f"Funds Injected", f"${cap:,.2f}")
+def get_metric(section_name, col_keywords, df_dict):
+    if section_name not in df_dict: return 0.0
+    df = df_dict[section_name]
+    # Filter out summary/total rows
+    df = df[~df.apply(lambda r: r.astype(str).str.contains('Total|Subtotal', case=False).any(), axis=1)]
+    # Find matching column
+    target_col = None
+    for col in df.columns:
+        if any(key.lower() in col.lower() for key in col_keywords):
+            target_col = col
+            break
+    if target_col:
+        return pd.to_numeric(df[target_col], errors='coerce').sum()
+    return 0.0
 
-# Profit (Safe Calculation)
-realized = 0.0
-if "Realized & Unrealized Performance Summary" in data_fy:
-    df_perf = data_fy["Realized & Unrealized Performance Summary"]
-    if 'Realized Total' in df_perf.columns:
-        realized = pd.to_numeric(df_perf['Realized Total'], errors='coerce').sum()
-c2.metric(f"Realized Profit", f"${realized:,.2f}")
+c1.metric("Funds Injected", f"${get_metric('Deposits & Withdrawals', ['Amount'], data_fy):,.2f}")
+c2.metric("Realized Profit", f"${get_metric('Realized & Unrealized Performance Summary', ['Realized Total'], data_fy):,.2f}")
+c3.metric("Dividends", f"${get_metric('Dividends', ['Amount'], data_fy):,.2f}")
 
-# Dividends (Safe Calculation)
-divs = 0.0
-if "Dividends" in data_fy:
-    divs = pd.to_numeric(data_fy["Dividends"]['Amount'], errors='coerce').sum()
-c3.metric(f"Dividends", f"${divs:,.2f}")
-
-# --- 5. STOCK TABLES ---
+# --- 5. STOCK BREAKDOWNS ---
+st.divider()
 if not df_lots.empty:
-    with st.spinner('Syncing Live Prices...'):
-        unique_syms = df_lots['Symbol'].unique().tolist()
-        try:
-            prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
-            if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
-        except: prices = {s: 0.0 for s in unique_syms}
+    unique_syms = df_lots['Symbol'].unique().tolist()
+    try:
+        prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
+        if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
+    except: prices = {s: 0.0 for s in unique_syms}
 
-    def render_section(subset, title):
-        st.subheader(title)
-        if subset.empty: 
-            st.info("No stocks in this category.")
-            return
+    def show_sec(subset, label):
+        st.markdown(f"### {label}")
+        if subset.empty: return st.info("No holdings.")
         subset['Cost'] = subset['qty'] * subset['price']
         agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum'}).reset_index()
         agg['Avg Buy'] = agg['Cost'] / agg['qty']
-        agg['Live'] = agg['Symbol'].map(prices).fillna(0)
-        agg['Value'] = agg['qty'] * agg['Live']
+        agg['Price'] = agg['Symbol'].map(prices).fillna(0)
+        agg['Value'] = agg['qty'] * agg['Price']
         agg['P/L $'] = agg['Value'] - agg['Cost']
         agg['P/L %'] = (agg['P/L $'] / agg['Cost']) * 100
-        
-        st.dataframe(agg.style.format({
-            "Avg Buy": "${:.2f}", "Live": "${:.2f}", "Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
-        }), use_container_width=True)
-        st.write(f"**{title} Total:** ${agg['Value'].sum():,.2f}")
+        st.dataframe(agg.style.format({"Avg Buy": "${:.2f}", "Price": "${:.2f}", "Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"}), use_container_width=True)
+        st.write(f"**Total {label} Value:** ${agg['Value'].sum():,.2f}")
 
-    render_section(df_lots.copy(), "1. Current Global Holdings")
-    render_section(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
-    render_section(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
+    show_sec(df_lots.copy(), "1. Current Global Holdings")
+    show_sec(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
+    show_sec(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
 
-# --- 6. FIFO CALCULATOR ---
-st.divider()
-st.header("🧮 FIFO Calculator")
-if not df_lots.empty:
+    # --- 6. CALCULATOR ---
+    st.divider()
+    st.header("🧮 FIFO Calculator")
     ca, cb = st.columns([1, 2])
-    ss = ca.selectbox("Stock", df_lots['Symbol'].unique())
-    s_lots = df_lots[df_lots['Symbol'] == ss].sort_values('date')
+    stock = ca.selectbox("Pick Stock", unique_syms)
+    s_lots = df_lots[df_lots['Symbol'] == stock].sort_values('date')
     tot = s_lots['qty'].sum()
+    amt = cb.slider("Units", 0.0, float(tot), float(tot*0.25))
+    t_p = cb.number_input("Target Profit %", value=105.0)
     
-    qty = cb.slider("Units", 0.0, float(tot), float(tot*0.25))
-    t_pct = cb.number_input("Target Profit %", value=105.0)
-    
-    if qty > 0:
-        tq, sc = qty, 0
+    if amt > 0:
+        tq, sc = amt, 0
         for _, l in s_lots.iterrows():
             if tq <= 0: break
             take = min(l['qty'], tq)
             sc += take * l['price']
             tq -= take
-        tp = (sc * (1 + t_pct/100)) / qty
-        st.success(f"Sell at **${tp:.2f}**")
+        res = (sc * (1 + t_p/100)) / amt
+        st.success(f"Sell at **${res:.2f}**")
