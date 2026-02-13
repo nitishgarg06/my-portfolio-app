@@ -2,14 +2,14 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import yfinance as yf
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="IBKR Master Portfolio", layout="wide", page_icon="📈")
+st.set_page_config(page_title="IBKR Pro Manager", layout="wide")
 
-# --- 1. CONNECTION ---
+# --- 1. CONNECTION & PARSING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def parse_ibkr_sheet(df):
-    """Parses IBKR format and cleans whitespace/formatting errors."""
     sections = {}
     if df.empty: return sections
     df = df.astype(str).apply(lambda x: x.str.strip())
@@ -24,134 +24,100 @@ def parse_ibkr_sheet(df):
             sections[name] = data
     return sections
 
-# --- 2. DATA MERGE ---
-tabs_to_read = ["FY24", "FY25", "FY26", "FY27"]
-all_trades, all_splits, all_divs = [], [], []
-
-for tab in tabs_to_read:
+# --- 2. DATA INGESTION ---
+tabs = ["FY24", "FY25", "FY26"]
+fy_data = {}
+for tab in tabs:
     try:
-        df_raw = conn.read(worksheet=tab, ttl=0)
-        parsed = parse_ibkr_sheet(df_raw)
-        if "Trades" in parsed: all_trades.append(parsed["Trades"])
-        if "Corporate Actions" in parsed: all_splits.append(parsed["Corporate Actions"])
-        if "Dividends" in parsed: all_divs.append(parsed["Dividends"])
+        raw = conn.read(worksheet=tab, ttl=0)
+        fy_data[tab] = parse_ibkr_sheet(raw)
     except: continue
 
-# --- 3. LOGIC ENGINES ---
-if all_trades:
-    trades = pd.concat(all_trades)
-    trades['Quantity'] = pd.to_numeric(trades['Quantity'], errors='coerce')
-    trades['T. Price'] = pd.to_numeric(trades['T. Price'], errors='coerce')
-    trades['Date/Time'] = pd.to_datetime(trades['Date/Time'])
-    trades = trades.sort_values('Date/Time')
+# Sidebar FY Selector
+selected_fy = st.sidebar.selectbox("Select Financial Year View", tabs, index=len(tabs)-1)
+data_current = fy_data.get(selected_fy, {})
 
-    # SPLIT ADJUSTER: Manually handling your verified splits for accuracy
-    # (Since CSV splits can be formatted inconsistently across years)
-    split_multipliers = {"NVDA": 10, "SMCI": 10} 
-    
-    st.title("🚀 My IBKR Portfolio Hub")
-    
-    # REQUIREMENT 1: SUMMARY
-    st.header("🏢 Current Holdings & Live Performance")
-    symbols = trades['Symbol'].unique().tolist()
-    
-    with st.spinner('Updating live prices...'):
-        price_data = yf.download(symbols, period="1d")['Close'].iloc[-1]
-    
-    summary_rows = []
-    for sym in symbols:
-        s_trades = trades[trades['Symbol'] == sym]
-        raw_qty = s_trades['Quantity'].sum()
-        
-        # Apply split multiplier if trade date was before the 2024 splits
-        # Simplified: If it's one of your split stocks, we ensure qty matches your manual audit
-        final_qty = raw_qty
-        if sym == "NVDA" and raw_qty < 11: final_qty = 11.0004
-        if sym == "SMCI" and raw_qty < 3: final_qty = 3.0
-
-        if final_qty > 0.001:
-            live_p = price_data[sym]
-            avg_cost = abs((s_trades['Quantity'] * s_trades['T. Price']).sum() / raw_qty) if raw_qty != 0 else 0
-            # If split happened, the cost basis per share drops
-            if sym in split_multipliers and raw_qty < final_qty:
-                avg_cost = avg_cost / split_multipliers[sym]
-
-            summary_rows.append({
-                "Symbol": sym, "Qty": round(final_qty, 4), 
-                "Avg Cost": avg_cost, "Live Price": live_p,
-                "Value": final_qty * live_p,
-                "Gain/Loss %": ((live_p - avg_cost) / avg_cost) * 100 if avg_cost > 0 else 0
-            })
-
-    st.dataframe(pd.DataFrame(summary_rows).style.format({
-        "Avg Cost": "${:.2f}", "Live Price": "${:.2f}", "Value": "${:.2f}", "Gain/Loss %": "{:.2f}%"
-    }))
-
-    # REQUIREMENT 2 & 3: FIFO CALCULATOR
-    st.divider()
-    st.header("🧮 FIFO Target Price Tool")
-    sel = st.selectbox("Choose a stock", symbols)
-    c1, c2, c3 = st.columns(3)
-    mode = c1.radio("Sell by", ["Units", "Percentage"])
-    amt = c2.number_input("Amount", min_value=0.01)
-    target = c3.number_input("Target Profit %", value=105.0)
-
-    # FIFO Logic
-    s_buy_trades = trades[(trades['Symbol'] == sel) & (trades['Quantity'] > 0)].copy()
-    # Correcting for splits in the calculator logic
-    if sel in split_multipliers:
-        s_buy_trades['Quantity'] = s_buy_trades['Quantity'] * split_multipliers[sel]
-        s_buy_trades['T. Price'] = s_buy_trades['T. Price'] / split_multipliers[sel]
-
-    total_s = s_buy_trades['Quantity'].sum()
-    to_sell = amt if mode == "Units" else (total_s * (amt/100))
-    
-    if to_sell > total_s:
-        st.error(f"Limit exceeded. Max: {total_s:.2f}")
-    else:
-        curr_q, total_c = to_sell, 0
-        for _, r in s_buy_trades.iterrows():
-            if curr_q <= 0: break
-            take = min(r['Quantity'], curr_q)
-            total_c += take * r['T. Price']
-            curr_q -= take
-        
-        req_price = (total_c * (1 + target/100)) / to_sell
-        st.success(f"To bag {target}% profit, sell **{to_sell:.4f} units** at **${req_price:.2f} USD**")
-
-# --- 6. DIVIDENDS & TAX ---
-st.divider()
-st.header("📑 Tax & Dividend Summary")
-
-if all_divs:
-    try:
-        # join='outer' ensures that if one year has an extra column, the app won't crash
-        df_divs = pd.concat(all_divs, ignore_index=True, join='outer')
-        
-        # Clean up the numeric column
-        df_divs['Amount'] = pd.to_numeric(df_divs['Amount'], errors='coerce').fillna(0)
-        
-        # Requirement 4: Dividend Summary
-        total_div = df_divs['Amount'].sum()
-        
-        c1, c2 = st.columns(2)
-        c1.metric("Total Dividends (Net)", f"${total_div:.2f}")
-        
-        # Requirement 4: Forex Summary (from Change in NAV section)
-        if "Change in NAV" in all_data:
-            nav_change = all_data["Change in NAV"]
-            fx_row = nav_change[nav_change['Field Name'].str.contains('FX', na=False)]
-            if not fx_row.empty:
-                fx_val = pd.to_numeric(fx_row.iloc[0,1], errors='coerce')
-                c2.metric("Forex Adjustments", f"${fx_val:.2f}")
-
-        st.subheader("Dividend History")
-        st.dataframe(df_divs.sort_values('Date', ascending=False) if 'Date' in df_divs.columns else df_divs)
-        
-    except Exception as e:
-        st.error(f"Error merging dividend data: {e}")
-        st.info("Check if all FY tabs have the 'Dividends' section header.")
+# --- 3. REQUIREMENT 1: FUNDS INVESTED ---
+st.header(f"💰 Financial Summary: {selected_fy}")
+if "Deposits & Withdrawals" in data_current:
+    dw = data_current["Deposits & Withdrawals"]
+    dw['Amount'] = pd.to_numeric(dw['Amount'], errors='coerce').fillna(0)
+    total_invested = dw['Amount'].sum()
+    st.metric("Total Funds Injected (Net)", f"${total_invested:,.2f}")
 else:
-    st.info("No dividend data found in the current Google Sheet tabs.")
+    st.info("No 'Deposits & Withdrawals' section found for this FY.")
 
+# --- 4. REQUIREMENT 4: LONG-TERM VS SHORT-TERM ---
+st.divider()
+st.header("⏳ Holding Period Analysis (CGT Status)")
+all_trades_list = [v["Trades"] for k, v in fy_data.items() if "Trades" in v]
+if all_trades_list:
+    trades_master = pd.concat(all_trades_list)
+    trades_master['Quantity'] = pd.to_numeric(trades_master['Quantity'], errors='coerce')
+    trades_master['T. Price'] = pd.to_numeric(trades_master['T. Price'], errors='coerce')
+    trades_master['Date/Time'] = pd.to_datetime(trades_master['Date/Time'])
+    
+    # Calculate holding period
+    today = pd.Timestamp.now()
+    buys = trades_master[trades_master['Quantity'] > 0].copy()
+    buys['Age_Days'] = (today - buys['Date/Time']).dt.days
+    buys['Category'] = buys['Age_Days'].apply(lambda x: "Long-Term (>1yr)" if x > 365 else "Short-Term (<1yr)")
+    
+    lt_sum = buys[buys['Category'] == "Long-Term (>1yr)"]['Quantity'].sum()
+    st_sum = buys[buys['Category'] == "Short-Term (<1yr)"]['Quantity'].sum()
+    
+    c1, c2 = st.columns(2)
+    c1.info(f"**Long-Term Holdings:** {lt_sum:.2f} units")
+    c2.warning(f"**Short-Term Holdings:** {st_sum:.2f} units")
 
+# --- 5. REQUIREMENT 2 & 3: ADVANCED FIFO CALCULATOR ---
+st.divider()
+st.header("🧮 Smart FIFO & Residual Calculator")
+symbols = trades_master['Symbol'].unique().tolist()
+sel_stock = st.selectbox("Select Stock to Analyze", symbols)
+
+# Get specific stock data
+stock_buys = buys[buys['Symbol'] == sel_stock].sort_values('Date/Time')
+total_qty = stock_buys['Quantity'].sum()
+
+# Dynamic Progress Bar/Slider (Requirement 2)
+calc_mode = st.radio("Calculation Mode", ["Percentage", "Specific Units"])
+if calc_mode == "Percentage":
+    sell_amt = st.slider("Select % to Sell", 0, 100, 25) / 100
+    qty_to_sell = total_qty * sell_amt
+else:
+    qty_to_sell = st.slider("Select Units to Sell", 0.0, float(total_qty), float(total_qty * 0.25))
+
+target_p = st.number_input("Target Profit %", value=105.0)
+
+if total_qty > 0:
+    # FIFO Math
+    temp_qty, sold_cost = qty_to_sell, 0
+    shares_consumed = 0
+    
+    for _, row in stock_buys.iterrows():
+        if temp_qty <= 0: break
+        take = min(row['Quantity'], temp_qty)
+        sold_cost += take * row['T. Price']
+        temp_qty -= take
+    
+    target_sell_price = (sold_cost * (1 + target_p/100)) / qty_to_sell
+    st.success(f"Target Sell Price: **${target_sell_price:.2f}**")
+
+    # REQUIREMENT 3: RESIDUAL ANALYSIS
+    remaining_qty = total_qty - qty_to_sell
+    if remaining_qty > 0:
+        total_portfolio_cost = (stock_buys['Quantity'] * stock_buys['T. Price']).sum()
+        remaining_cost_basis = total_portfolio_cost - sold_cost
+        avg_remaining_price = remaining_cost_basis / remaining_qty
+        
+        st.info(f"**Residual Portfolio Advice:**")
+        st.write(f"After selling, you will have **{remaining_qty:.2f}** units left.")
+        st.write(f"New Avg Price for remaining units: **${avg_remaining_price:.2f}**")
+        
+        # Current state of remaining
+        with st.spinner("Pinging Yahoo Finance..."):
+            last_p = yf.Ticker(sel_stock).fast_info['last_price']
+            rem_profit = (last_p - avg_remaining_price) * remaining_qty
+            color = "green" if rem_profit > 0 else "red"
+            st.markdown(f"Status of Remaining Units: :{color}[**${rem_profit:.2f} ({((last_p/avg_remaining_price)-1)*100:.2f}%)**]")
