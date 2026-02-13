@@ -160,4 +160,24 @@ if not df_lots.empty:
     st.header("🧮 FIFO Selling Tool")
     c_a, c_b = st.columns([1, 2])
     sel_stock = c_a.selectbox("Analyze Stock", unique_syms)
-    stock_lots = df_lots[df_lots
+    stock_lots = df_lots[df_lots['Symbol'] == sel_stock].sort_values('date')
+    total_owned = stock_lots['qty'].sum()
+    mode = c_a.radio("Mode", ["Units", "Percentage"])
+    amt = c_b.slider("Quantity", 0.0, float(total_owned) if mode=="Units" else 100.0, float(total_owned*0.25) if mode=="Units" else 25.0)
+    target = c_b.number_input("Target Profit %", value=105.0)
+    q_sell = amt if mode == "Units" else (total_owned * (amt/100))
+    if q_sell > 0:
+        tmp_q, s_cost = q_sell, 0
+        for _, l in stock_lots.iterrows():
+            if tmp_q <= 0: break
+            take = min(l['qty'], tmp_q)
+            s_cost += take * l['price']
+            tmp_q -= take
+        target_p = (s_cost * (1 + target/100)) / q_sell
+        st.success(f"Target Sell: **${target_p:.2f}**")
+        rem_q = total_owned - q_sell
+        if rem_q > 0:
+            rem_avg = ((stock_lots['qty'] * stock_lots['price']).sum() - s_cost) / rem_q
+            st.info(f"Residual New Avg: ${rem_avg:.2f}")
+else:
+    st.warning("No trades found in Google Sheets. Check tab names (FY24, FY25, FY26).")
