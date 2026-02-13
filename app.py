@@ -4,72 +4,68 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 
-# --- 1. SETUP ---
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# Minimal CSS to avoid crashes
-st.markdown("""
-    <style>
-    .section-header {
-        font-size: 1.4rem; font-weight: 700; color: #3b82f6;
-        margin-top: 30px; border-bottom: 1px solid #334155;
-    }
-    </style>
-    """, unsafe_allow_stdio=True)
-
-# --- 2. CONNECTION & PARSING ---
+# --- 1. THE CONNECTION & RAW PARSER ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def safe_parse(df):
+def parse_ibkr_grid(df):
+    """Bypasses auto-formatting to handle IBKR's unique CSV structure."""
     sections = {}
     if df is None or df.empty: return sections
-    df = df.astype(str).replace('nan', '').apply(lambda x: x.str.strip())
+    df = df.astype(str).replace('nan', '')
+    
     for name in df.iloc[:, 0].unique():
-        if name in ['', 'Statement', 'Field Name']: continue
+        if not name or name in ['Statement', 'Field Name']: continue
         sec_df = df[df.iloc[:, 0] == name]
         h_row = sec_df[sec_df.iloc[:, 1] == 'Header']
         d_rows = sec_df[sec_df.iloc[:, 1] == 'Data']
+        
         if not h_row.empty and not d_rows.empty:
-            cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
+            # Keep empty headers as unique names to prevent data shifting
+            raw_cols = h_row.iloc[0, 2:].tolist()
+            cols = [c if (c and c.strip()) else f"Blank_{i}" for i, c in enumerate(raw_cols)]
             data = d_rows.iloc[:, 2:2+len(cols)]
             data.columns = cols
-            sections[name] = data
+            # Drop the blank helper columns
+            sections[name] = data.loc[:, ~data.columns.str.startswith('Blank_')]
     return sections
 
-# --- 3. DATA INGESTION ---
+# --- 2. DATA INGESTION ---
 tabs = ["FY24", "FY25", "FY26"]
 fy_data_map = {}
 all_trades = []
 
 for tab in tabs:
     try:
-        raw = conn.read(worksheet=tab, ttl=0)
-        parsed = safe_parse(raw)
+        raw_grid = conn.read(worksheet=tab, ttl=0, header=None)
+        parsed = parse_ibkr_grid(raw_grid)
         if parsed:
             fy_data_map[tab] = parsed
-            if "Trades" in parsed: 
-                t_df = parsed["Trades"]
-                if 'DataDiscriminator' in t_df.columns:
-                    t_df = t_df[t_df['DataDiscriminator'] == 'Order']
-                else:
-                    t_df = t_df[~t_df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
-                all_trades.append(t_df)
+            if "Trades" in parsed:
+                t = parsed["Trades"]
+                # Filter for 'Order' to prevent double-counting totals
+                if 'DataDiscriminator' in t.columns:
+                    t = t[t['DataDiscriminator'] == 'Order']
+                all_trades.append(t)
     except: continue
 
-# --- 4. FIFO ENGINE ---
+# --- 3. FIFO ENGINE ---
 df_lots = pd.DataFrame()
 if all_trades:
     try:
         trades = pd.concat(all_trades, ignore_index=True)
         trades['Quantity'] = pd.to_numeric(trades['Quantity'], errors='coerce').fillna(0)
         trades['T. Price'] = pd.to_numeric(trades['T. Price'], errors='coerce').fillna(0)
+        # Handle IBKR's Date format
         trades['Date/Time'] = pd.to_datetime(trades['Date/Time'].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
 
-        for ticker in ['NVDA', 'SMCI']:
-            split_date = '2024-06-10' if ticker == 'NVDA' else '2024-10-01'
-            trades.loc[(trades['Symbol'] == ticker) & (trades['Date/Time'] < split_date), 'Quantity'] *= 10
-            trades.loc[(trades['Symbol'] == ticker) & (trades['Date/Time'] < split_date), 'T. Price'] /= 10
+        # Split Adjustments (NVDA/SMCI)
+        for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
+            trades.loc[(trades['Symbol'] == tkr) & (trades['Date/Time'] < dt), 'Quantity'] *= 10
+            trades.loc[(trades['Symbol'] == tkr) & (trades['Date/Time'] < dt), 'T. Price'] /= 10
 
         today = pd.Timestamp.now()
         holdings = []
@@ -90,96 +86,104 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 5. TOP METRICS ---
+# --- 4. TOP PERFORMANCE BAR (FY SPECIFIC) ---
 st.title("🏦 Wealth Terminal Pro")
-sel_fy = st.sidebar.selectbox("Financial Year Selection", tabs, index=len(tabs)-1)
+sel_fy = st.selectbox("Select Financial Year Context", tabs, index=len(tabs)-1)
 data_fy = fy_data_map.get(sel_fy, {})
 
-def get_metric(section, keys, df_dict):
-    if section not in df_dict: return 0.0
-    df = df_dict[section]
-    df = df[~df.apply(lambda r: r.astype(str).str.contains('Total|Subtotal', case=False).any(), axis=1)]
-    target = next((c for c in df.columns if any(k.lower() in c.lower() for k in keys)), None)
-    return pd.to_numeric(df[target], errors='coerce').sum() if target else 0.0
+c1, c2, c3 = st.columns(3)
+# Capital
+cap = 0.0
+if "Deposits & Withdrawals" in data_fy:
+    dw = data_fy["Deposits & Withdrawals"]
+    amt_col = 'Amount' if 'Amount' in dw.columns else dw.columns[-1]
+    dw_clean = dw[~dw.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
+    cap = pd.to_numeric(dw_clean[amt_col], errors='coerce').sum()
+c1.metric(f"Funds Injected ({sel_fy})", f"${cap:,.2f}")
 
-m1, m2, m3 = st.columns(3)
-m1.metric("Funds Injected", f"${get_metric('Deposits & Withdrawals', ['Amount'], data_fy):,.2f}")
-m2.metric("Realized Profit", f"${get_metric('Realized & Unrealized Performance Summary', ['Realized Total'], data_fy):,.2f}")
-m3.metric("Dividends", f"${get_metric('Dividends', ['Amount'], data_fy):,.2f}")
+# Realized Profit
+real = 0.0
+if "Realized & Unrealized Performance Summary" in data_fy:
+    perf = data_fy["Realized & Unrealized Performance Summary"]
+    if 'Realized Total' in perf.columns:
+        real = pd.to_numeric(perf['Realized Total'], errors='coerce').sum()
+c2.metric(f"Realized Profit ({sel_fy})", f"${real:,.2f}")
 
-# --- 6. DATA BREAKDOWNS ---
-cur_date = datetime.now().strftime('%d %b %Y')
+# Dividends
+div = 0.0
+if "Dividends" in data_fy:
+    dv = data_fy["Dividends"]
+    div = pd.to_numeric(dv['Amount'], errors='coerce').sum()
+c3.metric(f"Dividends ({sel_fy})", f"${div:,.2f}")
+
+# --- 5. STOCK BREAKDOWNS ---
+st.divider()
+cur_dt = datetime.now().strftime('%d %b %Y')
 
 if not df_lots.empty:
     unique_syms = sorted(df_lots['Symbol'].unique().tolist())
-    prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
-    if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
+    try:
+        prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
+        if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
+    except: prices = {s: 0.0 for s in unique_syms}
 
-    def render_clean_table(subset, label):
-        st.markdown(f'<div class="section-header">{label} (as of {cur_date})</div>', unsafe_allow_stdio=True)
-        if subset.empty: 
-            st.info("No holdings found.")
-            return
-        
+    def render_sec(subset, label):
+        st.subheader(f"{label} (as of {cur_dt})")
+        if subset.empty: return st.info("No holdings.")
         subset['Cost'] = subset['qty'] * subset['price']
         agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum'}).reset_index()
-        agg['Avg Buy Price'] = agg['Cost'] / agg['qty']
-        agg['Current Price'] = agg['Symbol'].map(prices).fillna(0)
-        agg['Current Value'] = agg['qty'] * agg['Current Price']
-        agg['P/L $'] = agg['Current Value'] - agg['Cost']
+        agg['Avg Buy'] = agg['Cost'] / agg['qty']
+        agg['Price'] = agg['Symbol'].map(prices).fillna(0)
+        agg['Value'] = agg['qty'] * agg['Price']
+        agg['P/L $'] = agg['Value'] - agg['Cost']
         agg['P/L %'] = (agg['P/L $'] / agg['Cost']) * 100
-        agg.index = range(1, len(agg) + 1)
+        
+        # Sr No. logic
+        agg.insert(0, 'Sr.', range(1, len(agg) + 1))
+        
+        # Styled Table (Native Method)
+        st.dataframe(agg.style.format({
+            "Avg Buy": "${:.2f}", "Price": "${:.2f}", "Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
+        }).map(lambda x: 'color: #10b981' if x > 0 else 'color: #ef4444', subset=['P/L $', 'P/L %']), use_container_width=True, hide_index=True)
+        st.write(f"**Total {label} Value:** `${agg['Value'].sum():,.2f}`")
 
-        # Robust Native Styling: No Applymap (Prevents Crashes)
-        st.column_config.NumberColumn
-        st.dataframe(
-            agg,
-            use_container_width=True,
-            column_config={
-                "Avg Buy Price": st.column_config.NumberColumn(format="$%.2f"),
-                "Current Price": st.column_config.NumberColumn(format="$%.2f"),
-                "Current Value": st.column_config.NumberColumn(format="$%.2f"),
-                "P/L $": st.column_config.NumberColumn(format="$%.2f"),
-                "P/L %": st.column_config.NumberColumn(format="%.2f%%"),
-            }
-        )
-        st.write(f"**Total {label} Value:** `${agg['Current Value'].sum():,.2f}`")
+    render_sec(df_lots.copy(), "1. Current Global Holdings")
+    render_sec(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
+    render_sec(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
 
-    render_clean_table(df_lots.copy(), "1. Current Global Holdings")
-    render_clean_table(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
-    render_clean_table(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
-
-    # --- 7. FIFO CALCULATOR ---
-    st.markdown('<div class="section-header">🧮 FIFO Selling Calculator</div>', unsafe_allow_stdio=True)
+    # --- 6. FIFO CALCULATOR ---
+    st.divider()
+    st.header("🧮 FIFO Selling Calculator")
     ca, cb = st.columns([1, 2])
-    stock = ca.selectbox("Select Ticker", unique_syms)
-    s_lots = df_lots[df_lots['Symbol'] == stock].sort_values('date')
+    ss = ca.selectbox("Analyze Stock", unique_syms)
+    s_lots = df_lots[df_lots['Symbol'] == ss].sort_values('date')
     tot = s_lots['qty'].sum()
     
-    calc_mode = ca.radio("Sale Mode", ["Specific Units", "Percentage of Holding"])
-    amt = cb.slider("Units to Sell", 0.0, float(tot), float(tot*0.25)) if calc_mode == "Specific Units" else tot * (cb.slider("Percentage (%)", 0, 100, 25) / 100)
-    t_p_pct = cb.number_input("Target Profit %", value=105.0)
+    mode = ca.radio("Sale Mode", ["Specific Units", "Percentage"])
+    qty = cb.slider("Amount to Sell", 0.0, float(tot), float(tot*0.25)) if mode == "Specific Units" else tot * (cb.slider("Percentage", 0, 100, 25) / 100)
+    target_pct = cb.number_input("Target Profit %", value=105.0)
     
-    if amt > 0:
-        tq, sc = amt, 0
+    if qty > 0:
+        tq, sc = qty, 0
         for _, l in s_lots.iterrows():
             if tq <= 0: break
             take = min(l['qty'], tq)
             sc += take * l['price']
             tq -= take
-        res_price = (sc * (1 + t_p_pct/100)) / amt
-        st.success(f"**Target Sell Price:** Sell {amt:.4f} units at **${res_price:.2f}**")
+        t_price = (sc * (1 + target_pct/100)) / qty
+        st.success(f"To bag {target_pct}% profit: Sell **{qty:.4f} units** at **${t_price:.2f}**")
         
-        rem_q = tot - amt
+        # CLEAN RESIDUAL INFO
+        rem_q = tot - qty
         if rem_q > 0:
+            st.markdown("---")
+            st.write("#### 💎 Residual Portfolio Status")
             rem_cost = (s_lots['qty'] * s_lots['price']).sum() - sc
             rem_avg = rem_cost / rem_q
-            live_now = prices[stock]
+            live_now = prices[ss]
             rem_pl = (live_now - rem_avg) * rem_q
             
-            st.write("---")
             r1, r2, r3 = st.columns(3)
             r1.metric("Remaining Units", f"{rem_q:.2f}")
             r2.metric("New Avg Cost", f"${rem_avg:.2f}")
-            # The delta parameter natively handles Green/Red coloring
-            r3.metric("Remaining P/L", f"${rem_pl:.2f}", delta=f"{((live_now/rem_avg)-1)*100:.2f}%")
+            r3.metric("Leftover P/L", f"${rem_pl:.2f}", f"{((live_now/rem_avg)-1)*100:.2f}%")
