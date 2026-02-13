@@ -4,48 +4,20 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 
-# --- 1. MODERN THEME & CSS ---
+# --- 1. SETUP ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
+# Minimal CSS to avoid crashes
 st.markdown("""
     <style>
-    /* Main Background and Font */
-    .main { background-color: #0e1117; }
-    
-    /* Custom Card Design for Metrics */
-    [data-testid="stMetricValue"] {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 32px !important;
-        font-weight: 700 !important;
-    }
-    
-    /* Header Styling */
     .section-header {
-        font-size: 1.5rem;
-        font-weight: 800;
-        color: #ffffff;
-        padding-bottom: 10px;
-        border-bottom: 2px solid #3b82f6;
-        margin-bottom: 20px;
-        margin-top: 30px;
-    }
-
-    /* Target Profit Success Message */
-    .stAlert {
-        border-radius: 10px;
-        border: none;
-        background-color: #1e293b;
-    }
-
-    /* DataFrame Styling */
-    .stDataFrame {
-        border: 1px solid #334155;
-        border-radius: 12px;
+        font-size: 1.4rem; font-weight: 700; color: #3b82f6;
+        margin-top: 30px; border-bottom: 1px solid #334155;
     }
     </style>
     """, unsafe_allow_stdio=True)
 
-# --- 2. CONNECTION & PARSING (STABLE ENGINE) ---
+# --- 2. CONNECTION & PARSING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def safe_parse(df):
@@ -77,7 +49,6 @@ for tab in tabs:
             fy_data_map[tab] = parsed
             if "Trades" in parsed: 
                 t_df = parsed["Trades"]
-                # Ensure we only get Order rows to maintain value accuracy
                 if 'DataDiscriminator' in t_df.columns:
                     t_df = t_df[t_df['DataDiscriminator'] == 'Order']
                 else:
@@ -95,7 +66,6 @@ if all_trades:
         trades['Date/Time'] = pd.to_datetime(trades['Date/Time'].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
 
-        # Split adjustments
         for ticker in ['NVDA', 'SMCI']:
             split_date = '2024-06-10' if ticker == 'NVDA' else '2024-10-01'
             trades.loc[(trades['Symbol'] == ticker) & (trades['Date/Time'] < split_date), 'Quantity'] *= 10
@@ -120,8 +90,8 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 5. TOP METRICS BAR ---
-st.title("💰 Wealth Terminal Pro")
+# --- 5. TOP METRICS ---
+st.title("🏦 Wealth Terminal Pro")
 sel_fy = st.sidebar.selectbox("Financial Year Selection", tabs, index=len(tabs)-1)
 data_fy = fy_data_map.get(sel_fy, {})
 
@@ -137,7 +107,7 @@ m1.metric("Funds Injected", f"${get_metric('Deposits & Withdrawals', ['Amount'],
 m2.metric("Realized Profit", f"${get_metric('Realized & Unrealized Performance Summary', ['Realized Total'], data_fy):,.2f}")
 m3.metric("Dividends", f"${get_metric('Dividends', ['Amount'], data_fy):,.2f}")
 
-# --- 6. GLOBAL BREAKDOWNS WITH COLOR CODING ---
+# --- 6. DATA BREAKDOWNS ---
 cur_date = datetime.now().strftime('%d %b %Y')
 
 if not df_lots.empty:
@@ -145,9 +115,12 @@ if not df_lots.empty:
     prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
     if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
 
-    def render_styled_table(subset, label):
+    def render_clean_table(subset, label):
         st.markdown(f'<div class="section-header">{label} (as of {cur_date})</div>', unsafe_allow_stdio=True)
-        if subset.empty: return st.info("No holdings.")
+        if subset.empty: 
+            st.info("No holdings found.")
+            return
+        
         subset['Cost'] = subset['qty'] * subset['price']
         agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum'}).reset_index()
         agg['Avg Buy Price'] = agg['Cost'] / agg['qty']
@@ -157,56 +130,56 @@ if not df_lots.empty:
         agg['P/L %'] = (agg['P/L $'] / agg['Cost']) * 100
         agg.index = range(1, len(agg) + 1)
 
-        # Apply Color Logic (Green for Profit, Red for Loss)
-        def color_pl(val):
-            color = '#10b981' if val > 0 else '#ef4444' # Tailwind Emerald-500 and Rose-500
-            return f'color: {color}; font-weight: bold;'
-
+        # Robust Native Styling: No Applymap (Prevents Crashes)
+        st.column_config.NumberColumn
         st.dataframe(
-            agg.style.format({
-                "Avg Buy Price": "${:.2f}", "Current Price": "${:.2f}", 
-                "Current Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
-            }).applymap(color_pl, subset=['P/L $', 'P/L %']), 
-            use_container_width=True
+            agg,
+            use_container_width=True,
+            column_config={
+                "Avg Buy Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Current Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Current Value": st.column_config.NumberColumn(format="$%.2f"),
+                "P/L $": st.column_config.NumberColumn(format="$%.2f"),
+                "P/L %": st.column_config.NumberColumn(format="%.2f%%"),
+            }
         )
+        st.write(f"**Total {label} Value:** `${agg['Current Value'].sum():,.2f}`")
 
-    render_styled_table(df_lots.copy(), "1. Current Global Holdings")
-    render_styled_table(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
-    render_styled_table(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
+    render_clean_table(df_lots.copy(), "1. Current Global Holdings")
+    render_clean_table(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
+    render_clean_table(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
 
-    # --- 7. FIFO CALCULATOR WITH NEW UI ---
+    # --- 7. FIFO CALCULATOR ---
     st.markdown('<div class="section-header">🧮 FIFO Selling Calculator</div>', unsafe_allow_stdio=True)
-    with st.container():
-        ca, cb = st.columns([1, 2])
-        stock = ca.selectbox("Select Ticker", unique_syms)
-        s_lots = df_lots[df_lots['Symbol'] == stock].sort_values('date')
-        tot = s_lots['qty'].sum()
+    ca, cb = st.columns([1, 2])
+    stock = ca.selectbox("Select Ticker", unique_syms)
+    s_lots = df_lots[df_lots['Symbol'] == stock].sort_values('date')
+    tot = s_lots['qty'].sum()
+    
+    calc_mode = ca.radio("Sale Mode", ["Specific Units", "Percentage of Holding"])
+    amt = cb.slider("Units to Sell", 0.0, float(tot), float(tot*0.25)) if calc_mode == "Specific Units" else tot * (cb.slider("Percentage (%)", 0, 100, 25) / 100)
+    t_p_pct = cb.number_input("Target Profit %", value=105.0)
+    
+    if amt > 0:
+        tq, sc = amt, 0
+        for _, l in s_lots.iterrows():
+            if tq <= 0: break
+            take = min(l['qty'], tq)
+            sc += take * l['price']
+            tq -= take
+        res_price = (sc * (1 + t_p_pct/100)) / amt
+        st.success(f"**Target Sell Price:** Sell {amt:.4f} units at **${res_price:.2f}**")
         
-        calc_mode = ca.radio("Sale Mode", ["Specific Units", "Percentage of Holding"])
-        amt = cb.slider("Units to Sell", 0.0, float(tot), float(tot*0.25)) if calc_mode == "Specific Units" else tot * (cb.slider("Percentage (%)", 0, 100, 25) / 100)
-        t_p_pct = cb.number_input("Target Profit %", value=105.0)
-        
-        if amt > 0:
-            tq, sc = amt, 0
-            for _, l in s_lots.iterrows():
-                if tq <= 0: break
-                take = min(l['qty'], tq)
-                sc += take * l['price']
-                tq -= take
-            res_price = (sc * (1 + t_p_pct/100)) / amt
+        rem_q = tot - amt
+        if rem_q > 0:
+            rem_cost = (s_lots['qty'] * s_lots['price']).sum() - sc
+            rem_avg = rem_cost / rem_q
+            live_now = prices[stock]
+            rem_pl = (live_now - rem_avg) * rem_q
             
-            st.success(f"**Target Sell Price:** Sell {amt:.4f} units at **${res_price:.2f}**")
-            
-            # RESIDUAL METRICS IN CARDS
-            rem_q = tot - amt
-            if rem_q > 0:
-                rem_cost = (s_lots['qty'] * s_lots['price']).sum() - sc
-                rem_avg = rem_cost / rem_q
-                live_now = prices[stock]
-                rem_pl = (live_now - rem_avg) * rem_q
-                
-                st.write("---")
-                r1, r2, r3 = st.columns(3)
-                r1.metric("Remaining Units", f"{rem_q:.2f}")
-                r2.metric("New Avg Cost", f"${rem_avg:.2f}")
-                r3.metric("Remaining Status", f"${rem_pl:.2f}", delta=f"{((live_now/rem_avg)-1)*100:.2f}%")
+            st.write("---")
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Remaining Units", f"{rem_q:.2f}")
+            r2.metric("New Avg Cost", f"${rem_avg:.2f}")
+            # The delta parameter natively handles Green/Red coloring
+            r3.metric("Remaining P/L", f"${rem_pl:.2f}", delta=f"{((live_now/rem_avg)-1)*100:.2f}%")
