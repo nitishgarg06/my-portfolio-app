@@ -119,11 +119,39 @@ if all_trades:
         req_price = (total_c * (1 + target/100)) / to_sell
         st.success(f"To bag {target}% profit, sell **{to_sell:.4f} units** at **${req_price:.2f} USD**")
 
-    # REQUIREMENT 4: TAX & DIVIDENDS
-    st.divider()
-    st.header("📑 Tax & Dividend Summary")
-    if all_divs:
-        st.dataframe(pd.concat(all_divs))
+# --- 6. DIVIDENDS & TAX ---
+st.divider()
+st.header("📑 Tax & Dividend Summary")
+
+if all_divs:
+    try:
+        # join='outer' ensures that if one year has an extra column, the app won't crash
+        df_divs = pd.concat(all_divs, ignore_index=True, join='outer')
+        
+        # Clean up the numeric column
+        df_divs['Amount'] = pd.to_numeric(df_divs['Amount'], errors='coerce').fillna(0)
+        
+        # Requirement 4: Dividend Summary
+        total_div = df_divs['Amount'].sum()
+        
+        c1, c2 = st.columns(2)
+        c1.metric("Total Dividends (Net)", f"${total_div:.2f}")
+        
+        # Requirement 4: Forex Summary (from Change in NAV section)
+        if "Change in NAV" in all_data:
+            nav_change = all_data["Change in NAV"]
+            fx_row = nav_change[nav_change['Field Name'].str.contains('FX', na=False)]
+            if not fx_row.empty:
+                fx_val = pd.to_numeric(fx_row.iloc[0,1], errors='coerce')
+                c2.metric("Forex Adjustments", f"${fx_val:.2f}")
+
+        st.subheader("Dividend History")
+        st.dataframe(df_divs.sort_values('Date', ascending=False) if 'Date' in df_divs.columns else df_divs)
+        
+    except Exception as e:
+        st.error(f"Error merging dividend data: {e}")
+        st.info("Check if all FY tabs have the 'Dividends' section header.")
 else:
-    st.info("Waiting for data... Ensure 'Trades' section is present in your Google Sheet tabs.")
+    st.info("No dividend data found in the current Google Sheet tabs.")
+
 
