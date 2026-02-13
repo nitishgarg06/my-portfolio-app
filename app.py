@@ -108,4 +108,63 @@ with st.container():
     realized = 0
     if "Realized & Unrealized Performance Summary" in data_fy:
         perf = data_fy["Realized & Unrealized Performance Summary"]
-        realized = pd.to_numeric(perf
+        realized = pd.to_numeric(perf['Realized Total'], errors='coerce').sum()
+    col2.metric("Realized Profit", f"${realized:,.2f}", delta_color="normal")
+
+    # Live Price logic for Total Value
+    if not df_lots.empty:
+        unique_syms = df_lots['Symbol'].unique().tolist()
+        prices = yf.download(unique_syms, period="1d")['Close'].iloc[-1].to_dict()
+        if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
+        
+        df_lots['Value'] = df_lots['qty'] * df_lots['Symbol'].map(prices)
+        total_val = df_lots['Value'].sum()
+        col3.metric("Current Portfolio Value", f"${total_val:,.2f}")
+
+# --- 5. TABS FOR STOCK BREAKDOWN ---
+st.markdown('<p class="section-header">Portfolio Breakdown</p>', unsafe_allow_stdio=True)
+
+tab1, tab2, tab3 = st.tabs(["🌎 All Holdings", "⏳ Short-Term", "💎 Long-Term"])
+
+def style_df(df_in):
+    if df_in.empty: return "No holdings."
+    df_agg = df_in.groupby('Symbol').agg({'qty': 'sum', 'qty': 'sum', 'price': 'mean'}).reset_index() # Simplified for display
+    # (Re-calculate the full metrics here as per previous logic)
+    df_agg['Cost'] = df_in.groupby('Symbol').apply(lambda x: (x['qty']*x['price']).sum()).values
+    df_agg['Avg Price'] = df_agg['Cost'] / df_agg['qty']
+    df_agg['Live Price'] = df_agg['Symbol'].map(prices)
+    df_agg['Value'] = df_agg['qty'] * df_agg['Live Price']
+    df_agg['P/L'] = df_agg['Value'] - df_agg['Cost']
+    df_agg['P/L %'] = (df_agg['P/L'] / df_agg['Cost']) * 100
+    
+    return df_agg[['Symbol', 'qty', 'Avg Price', 'Live Price', 'Value', 'P/L', 'P/L %']].style.format({
+        "Avg Price": "${:.2f}", "Live Price": "${:.2f}", "Value": "${:.2f}", "P/L": "${:.2f}", "P/L %": "{:.2f}%"
+    }).applymap(lambda x: 'color: #10b981' if x > 0 else 'color: #ef4444', subset=['P/L', 'P/L %'])
+
+with tab1: st.dataframe(style_df(df_lots.copy()), use_container_width=True)
+with tab2: st.dataframe(style_df(df_lots[df_lots['Type'] == "Short-Term"].copy()), use_container_width=True)
+with tab3: st.dataframe(style_df(df_lots[df_lots['Type'] == "Long-Term"].copy()), use_container_width=True)
+
+# --- 6. FIFO CALCULATOR WITH NEW DESIGN ---
+st.divider()
+with st.expander("🧮 Open FIFO Calculator Tool", expanded=True):
+    c1, c2 = st.columns([1, 2])
+    sel_stock = c1.selectbox("Stock", unique_syms)
+    stock_lots = df_lots[df_lots['Symbol'] == sel_stock].sort_values('date')
+    
+    total_owned = stock_lots['qty'].sum()
+    amt = c2.slider(f"Units of {sel_stock} to sell", 0.0, float(total_owned), float(total_owned*0.25))
+    
+    target_pct = st.number_input("Target Profit %", value=105.0)
+    
+    # Calculation Logic
+    tmp_q, s_cost = amt, 0
+    for _, l in stock_lots.iterrows():
+        if tmp_q <= 0: break
+        take = min(l['qty'], tmp_q)
+        s_cost += take * l['price']
+        tmp_q -= take
+    
+    if amt > 0:
+        target_p = (s_cost * (1 + target_pct/100)) / amt
+        st.success(f"To hit {target_pct}% profit: Sell at **${target_p:.2f}**")
