@@ -2,75 +2,73 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import yfinance as yf
+from datetime import datetime
 
-# --- MINIMAL CONFIG ---
-st.set_page_config(page_title="IBKR Tracker", layout="wide")
+# --- CONFIG ---
+st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# --- DATA CONNECTION ---
+# --- 1. CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def parse_ibkr(df):
-    """The simplest possible parser to avoid errors."""
+def safe_parse(df):
+    """Robust parser to handle IBKR's specific grid structure."""
     sections = {}
-    if df is None: return sections
-    df = df.astype(str)
+    if df is None or df.empty: return sections
+    df = df.astype(str).replace('nan', '').apply(lambda x: x.str.strip())
     for name in df.iloc[:, 0].unique():
-        if name in ['nan', 'Statement', '']: continue
+        if name in ['', 'Statement', 'Field Name']: continue
         sec_df = df[df.iloc[:, 0] == name]
-        # Find the row where column 1 is 'Header'
-        h_idx = sec_df[sec_df.iloc[:, 1] == 'Header'].index
-        d_idx = sec_df[sec_df.iloc[:, 1] == 'Data'].index
-        if not h_idx.empty:
-            cols = sec_df.loc[h_idx[0]].tolist()[2:]
-            data = sec_df.loc[d_idx].iloc[:, 2:]
-            # Only keep columns that have names
-            valid_cols = [c for c in cols if c and c != 'nan']
-            data = data.iloc[:, :len(valid_cols)]
-            data.columns = valid_cols
+        h_row = sec_df[sec_df.iloc[:, 1] == 'Header']
+        d_rows = sec_df[sec_df.iloc[:, 1] == 'Data']
+        if not h_row.empty and not d_rows.empty:
+            cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
+            data = d_rows.iloc[:, 2:2+len(cols)]
+            data.columns = cols
             sections[name] = data
     return sections
 
-# --- MAIN LOGIC ---
-st.title("🏦 My IBKR Wealth Terminal")
-
+# --- 2. DATA INGESTION ---
 tabs = ["FY24", "FY25", "FY26"]
+fy_data_map = {}
 all_trades = []
 
-# Try to load each tab one by one
-for t in tabs:
+for tab in tabs:
     try:
-        # header=None is safer for messy IBKR sheets
-        raw = conn.read(worksheet=t, ttl=0, header=None)
-        parsed = parse_ibkr(raw)
-        if "Trades" in parsed:
-            trades = parsed["Trades"]
-            # Fix column names if IBKR added spaces
-            trades.columns = trades.columns.str.strip()
-            all_trades.append(trades)
-    except Exception as e:
-        st.sidebar.warning(f"Could not read {t}: {e}")
+        raw = conn.read(worksheet=tab, ttl=0)
+        parsed = safe_parse(raw)
+        if parsed:
+            fy_data_map[tab] = parsed
+            if "Trades" in parsed: 
+                t_df = parsed["Trades"]
+                # Filter for 'Order' to prevent double-counting totals
+                if 'DataDiscriminator' in t_df.columns:
+                    t_df = t_df[t_df['DataDiscriminator'] == 'Order']
+                else:
+                    t_df = t_df[~t_df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
+                all_trades.append(t_df)
+    except: continue
 
+# --- 3. FIFO ENGINE ---
+df_lots = pd.DataFrame()
 if all_trades:
-    df = pd.concat(all_trades)
-    # Filter for actual trades (Orders)
-    if 'DataDiscriminator' in df.columns:
-        df = df[df['DataDiscriminator'] == 'Order']
-    
-    # 1. Row Index Fix (Starting from 1)
-    df.index = range(1, len(df) + 1)
-    
-    # 2. Basic Display
-    st.header("1. Current Holdings")
-    st.dataframe(df, use_container_width=True)
+    try:
+        trades = pd.concat(all_trades, ignore_index=True)
+        trades['Quantity'] = pd.to_numeric(trades['Quantity'], errors='coerce').fillna(0)
+        trades['T. Price'] = pd.to_numeric(trades['T. Price'], errors='coerce').fillna(0)
+        trades['Date/Time'] = pd.to_datetime(trades['Date/Time'].str.split(',').str[0], errors='coerce')
+        trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
 
-    # 3. Simple Calculator (Check if this part is the crash point)
-    st.divider()
-    st.header("🧮 Calculator")
-    syms = df['Symbol'].unique()
-    target_stock = st.selectbox("Pick a stock", syms)
-    
-    st.write(f"Showing trades for {target_stock}")
-    st.table(df[df['Symbol'] == target_stock])
+        # Split adjustments (NVDA/SMCI)
+        trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'Quantity'] *= 10
+        trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'T. Price'] /= 10
+        trades.loc[(trades['Symbol'] == 'SMCI') & (trades['Date/Time'] < '2024-10-01'), 'Quantity'] *= 10
+        trades.loc[(trades['Symbol'] == 'SMCI') & (trades['Date/Time'] < '2024-10-01'), 'T. Price'] /= 10
 
-else:
-    st.error("No data found. Please check your Tab Names in Google Sheets (must be FY24, FY25, FY26).")
+        today = pd.Timestamp.now()
+        holdings = []
+        for sym in trades['Symbol'].unique():
+            lots = []
+            for _, row in trades[trades['Symbol'] == sym].iterrows():
+                if row['Quantity'] > 0: 
+                    lots.append({'date': row['Date/Time'], 'qty': row['Quantity'], 'price': row['T. Price']})
+                elif row
