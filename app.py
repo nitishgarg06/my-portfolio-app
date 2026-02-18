@@ -7,32 +7,33 @@ from datetime import datetime
 # --- CONFIG ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# Minimal CSS to avoid TypeErrors seen in logs
-st.markdown("<style>.metric-label { font-size: 16px; font-weight: bold; }</style>", unsafe_allow_stdio=True)
-
 # --- 1. CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def clean_val(series):
-    """Deep cleans currency strings and handles parentheses for negatives."""
-    if series is None: return pd.Series(0.0)
-    # Remove $, commas, and handle '(1.00)' as -1.00
-    cleaned = series.astype(str).str.replace(r'[$,]', '', regex=True)
-    cleaned = cleaned.str.replace(r'\(', '-', regex=True).str.replace(r'\)', '', regex=True)
-    return pd.to_numeric(cleaned, errors='coerce').fillna(0.0)
+def universal_clean(val):
+    """Extremely aggressive cleaner for any numeric or date string."""
+    if val is None or pd.isna(val): return 0.0
+    s = str(val).strip().replace('$', '').replace(',', '')
+    # Handle IBKR's (1.00) notation for negative numbers
+    if '(' in s and ')' in s:
+        s = '-' + s.replace('(', '').replace(')', '')
+    try:
+        return float(s)
+    except:
+        return 0.0
 
-def find_col(df, keywords):
-    """Finds a column name in a dataframe based on keywords (case-insensitive)."""
+def safe_find_col(df, keywords):
+    """Finds column names even with extra spaces or different casing."""
     for col in df.columns:
-        if any(key.lower() in col.lower() for key in keywords):
+        if any(key.lower() in str(col).lower() for key in keywords):
             return col
     return None
 
-def safe_parse(df):
-    """Robust parser for IBKR grid structure."""
+def parse_ibkr_grid(df):
+    """Parses the raw IBKR sheet into distinct sections."""
     sections = {}
     if df is None or df.empty: return sections
-    df = df.astype(str).replace('nan', '').apply(lambda x: x.str.strip())
+    df = df.astype(str).replace('nan', '')
     for name in df.iloc[:, 0].unique():
         if name in ['', 'Statement', 'Field Name']: continue
         sec_df = df[df.iloc[:, 0] == name]
@@ -53,7 +54,7 @@ all_trades_list = []
 for tab in tabs:
     try:
         raw = conn.read(worksheet=tab, ttl=0)
-        parsed = safe_parse(raw)
+        parsed = parse_ibkr_grid(raw)
         if parsed:
             fy_data_map[tab] = parsed
             if "Trades" in parsed:
@@ -61,7 +62,7 @@ for tab in tabs:
                 if 'DataDiscriminator' in t_df.columns:
                     t_df = t_df[t_df['DataDiscriminator'] == 'Order']
                 all_trades_list.append(t_df)
-    except Exception:
+    except:
         continue
 
 # --- 3. FIFO ENGINE ---
@@ -69,33 +70,33 @@ df_lots = pd.DataFrame()
 if all_trades_list:
     try:
         trades = pd.concat(all_trades_list, ignore_index=True)
-        # Dynamic Column Finding
-        qty_col = find_col(trades, ['Quantity'])
-        prc_col = find_col(trades, ['Price', 'T. Price'])
-        cmm_col = find_col(trades, ['Comm', 'Commission'])
-        dt_col = find_col(trades, ['Date/Time', 'Date'])
+        # Dynamic Column Discovery
+        q_col = safe_find_col(trades, ['Quantity'])
+        p_col = safe_find_col(trades, ['Price', 'T. Price'])
+        c_col = safe_find_col(trades, ['Comm', 'Commission'])
+        d_col = safe_find_col(trades, ['Date/Time', 'Date'])
 
-        trades['Quantity'] = clean_val(trades.get(qty_col))
-        trades['T. Price'] = clean_val(trades.get(prc_col))
-        trades['Comm'] = clean_val(trades.get(cmm_col)).abs()
+        trades['qty'] = trades[q_col].apply(universal_clean)
+        trades['prc'] = trades[p_col].apply(universal_clean)
+        trades['cmm'] = trades[c_col].apply(universal_clean).abs()
         
-        trades['Date/Time'] = pd.to_datetime(trades[dt_col].str.split(',').str[0], errors='coerce')
-        trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
+        # Clean Date Strings
+        trades['dt'] = pd.to_datetime(trades[d_col].str.split(',').str[0], errors='coerce')
+        trades = trades.dropna(subset=['dt']).sort_values('dt')
 
         # Split adjustments
-        for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
-            trades.loc[(trades['Symbol'] == tkr) & (trades['Date/Time'] < dt), 'Quantity'] *= 10
-            trades.loc[(trades['Symbol'] == tkr) & (trades['Date/Time'] < dt), 'T. Price'] /= 10
+        for tkr, split_dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
+            trades.loc[(trades['Symbol'] == tkr) & (trades['dt'] < split_dt), 'qty'] *= 10
+            trades.loc[(trades['Symbol'] == tkr) & (trades['dt'] < split_dt), 'prc'] /= 10
 
-        today = pd.Timestamp.now()
         holdings = []
         for sym in trades['Symbol'].unique():
             lots = []
             for _, row in trades[trades['Symbol'] == sym].iterrows():
-                if row['Quantity'] > 0: 
-                    lots.append({'date': row['Date/Time'], 'qty': row['Quantity'], 'price': row['T. Price'], 'buy_comm': row['Comm']})
-                elif row['Quantity'] < 0:
-                    sq = abs(row['Quantity'])
+                if row['qty'] > 0: 
+                    lots.append({'date': row['dt'], 'qty': row['qty'], 'price': row['prc'], 'comm': row['cmm']})
+                elif row['qty'] < 0:
+                    sq = abs(row['qty'])
                     while sq > 0 and lots:
                         if lots[0]['qty'] <= sq:
                             sq -= lots[0].pop('qty')
@@ -105,45 +106,39 @@ if all_trades_list:
                             sq = 0
             for l in lots:
                 l['Symbol'] = sym
-                l['Type'] = "Long-Term" if (today - l['date']).days > 365 else "Short-Term"
+                l['Type'] = "Long-Term" if (pd.Timestamp.now() - l['date']).days > 365 else "Short-Term"
                 holdings.append(l)
         df_lots = pd.DataFrame(holdings)
-    except Exception as e:
-        st.error(f"FIFO Engine Error: {e}")
+    except:
+        pass
 
-# --- 4. TOP PERFORMANCE BAR ---
+# --- 4. DASHBOARD ---
 st.title("🏦 Wealth Terminal Pro")
-sel_fy = st.selectbox("Financial Year Performance", tabs, index=len(tabs)-1)
+sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
 data_fy = fy_data_map.get(sel_fy, {})
 
-def get_fy_metric(section, keywords, df_dict):
+def get_metric(section, keys, df_dict):
     if section not in df_dict: return 0.0
     df = df_dict[section]
-    col = find_col(df, keywords)
+    col = safe_find_col(df, keys)
     if not col: return 0.0
-    # Filter out total rows
-    df = df[~df.apply(lambda r: r.astype(str).str.contains('Total|Subtotal', case=False).any(), axis=1)]
-    return clean_val(df[col]).sum()
+    df = df[~df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
+    return df[col].apply(universal_clean).sum()
 
-funds = get_fy_metric('Deposits & Withdrawals', ['Amount'], data_fy)
-stocks_pl = get_fy_metric('Realized & Unrealized Performance Summary', ['Realized Total'], data_fy)
-# Commissions are usually in 'Trades' section
-comms = get_fy_metric('Trades', ['Comm', 'Commission'], data_fy).abs()
-divs = get_fy_metric('Dividends', ['Amount'], data_fy)
+# Metrics
+funds = get_metric('Deposits & Withdrawals', ['Amount'], data_fy)
+pl = get_metric('Realized & Unrealized Performance Summary', ['Realized Total'], data_fy)
+comms = get_metric('Trades', ['Comm', 'Commission'], data_fy)
+divs = get_metric('Dividends', ['Amount'], data_fy)
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Funds Injected", f"${funds:,.2f}")
-m2.metric("Total Realized P/L", f"${stocks_pl:,.2f}")
-m3.metric("Total Commissions", f"${comms:,.2f}")
+m2.metric("Total Realized P/L", f"${pl:,.2f}")
+m3.metric("Commissions", f"${abs(comms):,.2f}")
 m4.metric("Dividends", f"${divs:,.2f}")
 
-with st.expander("📊 View Net P/L Breakdown"):
-    st.write(f"**Net Profit/Loss (After Fees):** `${(stocks_pl - comms):,.2f}`")
-
-# --- 5. STOCK BREAKDOWNS ---
+# --- 5. HOLDINGS TABLES ---
 st.divider()
-cur_date = datetime.now().strftime('%d %b %Y')
-
 if not df_lots.empty:
     unique_syms = sorted(df_lots['Symbol'].unique().tolist())
     try:
@@ -151,24 +146,22 @@ if not df_lots.empty:
         if len(unique_syms) == 1: prices = {unique_syms[0]: prices}
     except: prices = {s: 0.0 for s in unique_syms}
 
-    def show_sec(subset, label):
-        st.markdown(f"### {label} (as of {cur_date})")
-        if subset.empty: return st.info("No holdings.")
+    def render_table(subset, label):
+        st.subheader(f"{label} (as of {datetime.now().strftime('%d %b %Y')})")
+        if subset.empty: return st.info("No positions.")
         
-        subset['Cost_No_Comm'] = subset['qty'] * subset['price']
-        subset['Comm_Paid'] = subset.get('buy_comm', 0.0)
-        
-        agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost_No_Comm': 'sum', 'Comm_Paid': 'sum'}).reset_index()
-        agg['Avg Buy Price'] = agg['Cost_No_Comm'] / agg['qty']
-        agg['Current Price'] = agg['Symbol'].map(prices).fillna(0.0)
-        agg['Current Value'] = agg['qty'] * agg['Current Price']
-        agg['Net P/L $'] = (agg['Current Value'] - agg['Cost_No_Comm']) - agg['Comm_Paid']
-        agg['Net P/L %'] = (agg['Net P/L $'] / (agg['Cost_No_Comm'] + agg['Comm_Paid'])) * 100
+        subset['Cost'] = subset['qty'] * subset['price']
+        agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum', 'comm': 'sum'}).reset_index()
+        agg['Avg Buy'] = agg['Cost'] / agg['qty']
+        agg['Price'] = agg['Symbol'].map(prices).fillna(0.0)
+        agg['Value'] = agg['qty'] * agg['Price']
+        agg['Net P/L $'] = (agg['Value'] - agg['Cost']) - agg['comm']
+        agg['Net P/L %'] = (agg['Net P/L $'] / (agg['Cost'] + agg['comm'])) * 100
         
         agg.index = range(1, len(agg) + 1)
         st.dataframe(agg.style.format({
-            "Avg Buy Price": "${:.2f}", "Current Price": "${:.2f}", "Current Value": "${:.2f}", 
-            "Comm_Paid": "${:.2f}", "Net P/L $": "${:.2f}", "Net P/L %": "{:.2f}%"
+            "Avg Buy": "${:.2f}", "Price": "${:.2f}", "Value": "${:.2f}", 
+            "comm": "${:.2f}", "Net P/L $": "${:.2f}", "Net P/L %": "{:.2f}%"
         }).map(lambda x: 'color: green' if x > 0 else 'color: red', subset=['Net P/L $', 'Net P/L %']), use_container_width=True)
 
-    show_sec(df_lots.copy(), "1. Current Global Holdings")
+    render_table(df_lots.copy(), "1. Current Global Holdings")
