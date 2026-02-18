@@ -11,7 +11,6 @@ st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="�
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def safe_parse(df):
-    """Robust parser to handle IBKR's specific grid structure."""
     sections = {}
     if df is None or df.empty: return sections
     df = df.astype(str).replace('nan', '').apply(lambda x: x.str.strip())
@@ -30,7 +29,7 @@ def safe_parse(df):
 # --- 2. DATA INGESTION ---
 tabs = ["FY24", "FY25", "FY26"]
 fy_data_map = {}
-all_trades = []
+all_trades_list = []
 
 for tab in tabs:
     try:
@@ -40,29 +39,27 @@ for tab in tabs:
             fy_data_map[tab] = parsed
             if "Trades" in parsed: 
                 t_df = parsed["Trades"]
-                # Filter for 'Order' to prevent double-counting totals
                 if 'DataDiscriminator' in t_df.columns:
                     t_df = t_df[t_df['DataDiscriminator'] == 'Order']
-                else:
-                    t_df = t_df[~t_df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)]
-                all_trades.append(t_df)
+                all_trades_list.append(t_df)
     except: continue
 
 # --- 3. FIFO ENGINE ---
 df_lots = pd.DataFrame()
-if all_trades:
+if all_trades_list:
     try:
-        trades = pd.concat(all_trades, ignore_index=True)
+        trades = pd.concat(all_trades_list, ignore_index=True)
         trades['Quantity'] = pd.to_numeric(trades['Quantity'], errors='coerce').fillna(0)
         trades['T. Price'] = pd.to_numeric(trades['T. Price'], errors='coerce').fillna(0)
+        # Fix for commissions: Clean strings like '($1.00)' or '-1.00'
+        trades['Comm'] = pd.to_numeric(trades['Comm in AUD'].astype(str).str.replace(r'[()$,]', '', regex=True), errors='coerce').fillna(0).abs()
         trades['Date/Time'] = pd.to_datetime(trades['Date/Time'].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['Date/Time']).sort_values('Date/Time')
 
-        # Split adjustments (NVDA/SMCI)
-        trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'Quantity'] *= 10
-        trades.loc[(trades['Symbol'] == 'NVDA') & (trades['Date/Time'] < '2024-06-10'), 'T. Price'] /= 10
-        trades.loc[(trades['Symbol'] == 'SMCI') & (trades['Date/Time'] < '2024-10-01'), 'Quantity'] *= 10
-        trades.loc[(trades['Symbol'] == 'SMCI') & (trades['Date/Time'] < '2024-10-01'), 'T. Price'] /= 10
+        # Split adjustments
+        for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
+            trades.loc[(trades['Symbol'] == tkr) & (trades['Date/Time'] < dt), 'Quantity'] *= 10
+            trades.loc[(trades['Symbol'] == tkr) & (trades['Date/Time'] < dt), 'T. Price'] /= 10
 
         today = pd.Timestamp.now()
         holdings = []
@@ -70,7 +67,8 @@ if all_trades:
             lots = []
             for _, row in trades[trades['Symbol'] == sym].iterrows():
                 if row['Quantity'] > 0: 
-                    lots.append({'date': row['Date/Time'], 'qty': row['Quantity'], 'price': row['T. Price']})
+                    # Add commission to cost basis for buys
+                    lots.append({'date': row['Date/Time'], 'qty': row['Quantity'], 'price': row['T. Price'], 'buy_comm': row['Comm']})
                 elif row['Quantity'] < 0:
                     sq = abs(row['Quantity'])
                     while sq > 0 and lots:
@@ -88,7 +86,6 @@ st.title("🏦 Wealth Terminal Pro")
 sel_fy = st.selectbox("Financial Year Performance", tabs, index=len(tabs)-1)
 data_fy = fy_data_map.get(sel_fy, {})
 
-c1, c2, c3 = st.columns(3)
 def get_metric(section, keys, df_dict):
     if section not in df_dict: return 0.0
     df = df_dict[section]
@@ -96,9 +93,37 @@ def get_metric(section, keys, df_dict):
     target = next((c for c in df.columns if any(k.lower() in c.lower() for k in keys)), None)
     return pd.to_numeric(df[target], errors='coerce').sum() if target else 0.0
 
-c1.metric("Funds Injected", f"${get_metric('Deposits & Withdrawals', ['Amount'], data_fy):,.2f}")
-c2.metric("Realized Profit", f"${get_metric('Realized & Unrealized Performance Summary', ['Realized Total'], data_fy):,.2f}")
-c3.metric("Dividends", f"${get_metric('Dividends', ['Amount'], data_fy):,.2f}")
+# Calculate FX vs Stock
+stocks_pl = 0.0
+forex_pl = 0.0
+total_comm = 0.0
+
+if 'Realized & Unrealized Performance Summary' in data_fy:
+    perf = data_fy['Realized & Unrealized Performance Summary']
+    perf = perf[~perf['Symbol'].str.contains('Total|Asset', case=False, na=False)]
+    perf['Realized Total'] = pd.to_numeric(perf['Realized Total'], errors='coerce').fillna(0)
+    if 'Asset Category' in perf.columns:
+        stocks_pl = perf[perf['Asset Category'].str.contains('Stock|Equity', case=False, na=False)]['Realized Total'].sum()
+        forex_pl = perf[perf['Asset Category'].str.contains('Forex|Cash', case=False, na=False)]['Realized Total'].sum()
+
+if 'Trades' in data_fy:
+    tr = data_fy['Trades']
+    total_comm = pd.to_numeric(tr['Comm in AUD'].astype(str).str.replace(r'[()$,]', '', regex=True), errors='coerce').fillna(0).abs().sum()
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Funds Injected", f"${get_metric('Deposits & Withdrawals', ['Amount'], data_fy):,.2f}")
+m2.metric("Total Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+m3.metric("Total Commissions", f"${total_comm:,.2f}")
+m4.metric("Dividends", f"${get_metric('Dividends', ['Amount'], data_fy):,.2f}")
+
+with st.expander("📊 View FY Breakdown (Stocks / Forex / Net)"):
+    ca, cb, cc = st.columns(3)
+    ca.write("**Stock Realized P/L**")
+    ca.subheader(f"${stocks_pl:,.2f}")
+    cb.write("**Forex Realized P/L**")
+    cb.subheader(f"${forex_pl:,.2f}")
+    cc.write("**Net P/L (After Fees)**")
+    cc.subheader(f"${(stocks_pl + forex_pl - total_comm):,.2f}")
 
 # --- 5. STOCK BREAKDOWNS ---
 st.divider()
@@ -112,66 +137,29 @@ if not df_lots.empty:
     def show_sec(subset, label):
         st.markdown(f"### {label} (as of {cur_date})")
         if subset.empty: return st.info("No holdings found.")
-        subset['Cost'] = subset['qty'] * subset['price']
-        agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum'}).reset_index()
-        agg['Avg Buy Price'] = agg['Cost'] / agg['qty']
+        
+        # Calculate Cost including buy commissions
+        subset['Cost_No_Comm'] = subset['qty'] * subset['price']
+        subset['Comm_Paid'] = subset.get('buy_comm', 0)
+        
+        agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost_No_Comm': 'sum', 'Comm_Paid': 'sum'}).reset_index()
+        agg['Avg Buy Price'] = agg['Cost_No_Comm'] / agg['qty']
         agg['Current Price'] = agg['Symbol'].map(prices).fillna(0)
         agg['Current Value'] = agg['qty'] * agg['Current Price']
-        agg['P/L $'] = agg['Current Value'] - agg['Cost']
-        agg['P/L %'] = (agg['P/L $'] / agg['Cost']) * 100
         
-        # Row counting starting from 1
+        # P/L Logic
+        agg['Gross P/L $'] = agg['Current Value'] - agg['Cost_No_Comm']
+        agg['Net P/L $'] = agg['Gross P/L $'] - agg['Comm_Paid']
+        agg['Net P/L %'] = (agg['Net P/L $'] / (agg['Cost_No_Comm'] + agg['Comm_Paid'])) * 100
+        
         agg.index = range(1, len(agg) + 1)
         
         st.dataframe(agg.style.format({
-            "Avg Buy Price": "${:.2f}", "Current Price": "${:.2f}", "Current Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
-        }).map(lambda x: 'color: green' if x > 0 else 'color: red', subset=['P/L $', 'P/L %']), use_container_width=True)
-        st.write(f"**Total {label} Value:** `${agg['Current Value'].sum():,.2f}`")
+            "Avg Buy Price": "${:.2f}", "Current Price": "${:.2f}", "Current Value": "${:.2f}", 
+            "Comm_Paid": "${:.2f}", "Gross P/L $": "${:.2f}", "Net P/L $": "${:.2f}", "Net P/L %": "{:.2f}%"
+        }).map(lambda x: 'color: green' if x > 0 else 'color: red', subset=['Net P/L $', 'Net P/L %']), use_container_width=True)
+        st.write(f"**Total Net Value:** `${agg['Current Value'].sum():,.2f}` | **Total Commissions in this View:** `${agg['Comm_Paid'].sum():,.2f}`")
 
     show_sec(df_lots.copy(), "1. Current Global Holdings")
     show_sec(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
     show_sec(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
-
-    # --- 6. FIFO CALCULATOR & RESIDUALS ---
-    st.divider()
-    st.header("🧮 FIFO Selling Calculator")
-    ca, cb = st.columns([1, 2])
-    stock = ca.selectbox("Select Ticker", unique_syms)
-    s_lots = df_lots[df_lots['Symbol'] == stock].sort_values('date')
-    tot = s_lots['qty'].sum()
-    
-    calc_mode = ca.radio("Sale Mode", ["Specific Units", "Percentage of Holding"])
-    
-    if calc_mode == "Specific Units":
-        amt = cb.slider("Units to Sell", 0.0, float(tot), float(tot*0.25))
-    else:
-        pct = cb.slider("Percentage (%)", 0, 100, 25)
-        amt = tot * (pct / 100)
-        
-    t_p_pct = cb.number_input("Target Profit %", value=105.0)
-    
-    if amt > 0:
-        tq, sc = amt, 0
-        for _, l in s_lots.iterrows():
-            if tq <= 0: break
-            take = min(l['qty'], tq)
-            sc += take * l['price']
-            tq -= take
-        res_price = (sc * (1 + t_p_pct/100)) / amt
-        st.success(f"To achieve {t_p_pct}% profit, sell **{amt:.4f} units** at **${res_price:.2f}**")
-        
-        # CLEAN RESIDUAL INFO
-        rem_q = tot - amt
-        if rem_q > 0:
-            st.markdown("---")
-            st.write("#### 💎 Residual Portfolio Strategy")
-            rem_cost = (s_lots['qty'] * s_lots['price']).sum() - sc
-            rem_avg = rem_cost / rem_q
-            live_now = prices[stock]
-            rem_pl = (live_now - rem_avg) * rem_q
-            rem_pct = ((live_now / rem_avg) - 1) * 100
-            
-            cr1, cr2, cr3 = st.columns(3)
-            cr1.metric("Remaining Quantity", f"{rem_q:.2f} units")
-            cr2.metric("New Avg Price", f"${rem_avg:.2f}")
-            cr3.metric("Remaining P/L Status", f"${rem_pl:.2f}", f"{rem_pct:.2f}%")
