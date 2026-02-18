@@ -1,13 +1,12 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-import yfinance as yf
 from datetime import datetime
 
 # --- CONFIG ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# --- 1. CONNECTION & CLEANERS ---
+# --- 1. CONNECTION & UTILS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def safe_num(val):
@@ -42,6 +41,7 @@ def parse_ibkr_grid(df):
 tabs = ["FY24", "FY25", "FY26"]
 fy_map = {}
 all_trades = []
+corporate_actions = []
 
 for t in tabs:
     try:
@@ -50,16 +50,21 @@ for t in tabs:
         if parsed:
             fy_map[t] = parsed
             if "Trades" in parsed: all_trades.append(parsed["Trades"])
+            if "Corporate Actions" in parsed: corporate_actions.append(parsed["Corporate Actions"])
     except: continue
 
-# --- 3. DYNAMIC FIFO ENGINE (WITH AUTOMATIC SPLITS) ---
+# --- 3. FIFO ENGINE (INTERNAL SPLIT LOGIC) ---
 df_lots = pd.DataFrame()
 if all_trades:
     try:
         trades = pd.concat(all_trades, ignore_index=True)
         trades.columns = trades.columns.str.strip()
         
-        q_c, p_c, c_c, d_c = find_col(trades, ['Qty']), find_col(trades, ['Price']), find_col(trades, ['Comm']), find_col(trades, ['Date'])
+        # Identify Columns
+        q_c = find_col(trades, ['Qty'])
+        p_c = find_col(trades, ['Price'])
+        c_c = find_col(trades, ['Comm'])
+        d_c = find_col(trades, ['Date'])
 
         trades['qty_v'] = trades[q_c].apply(safe_num)
         trades['prc_v'] = trades[p_c].apply(safe_num)
@@ -67,19 +72,26 @@ if all_trades:
         trades['dt_v'] = pd.to_datetime(trades[d_c].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['dt_v']).sort_values('dt_v')
 
-        # DYNAMIC SPLIT ADJUSTMENT
-        unique_tickers = trades['Symbol'].unique()
-        for ticker in unique_tickers:
-            try:
-                stock_obj = yf.Ticker(ticker)
-                splits = stock_obj.splits
-                if not splits.empty:
-                    for split_date, ratio in splits.items():
-                        # Adjust trades that happened BEFORE the split date
-                        trades.loc[(trades['Symbol'] == ticker) & (trades['dt_v'].dt.tz_localize(None) < split_date.tz_localize(None)), 'qty_v'] *= ratio
-                        trades.loc[(trades['Symbol'] == ticker) & (trades['dt_v'].dt.tz_localize(None) < split_date.tz_localize(None)), 'prc_v'] /= ratio
-            except: continue
+        # --- INTERNAL SPLIT ADJUSTMENT ---
+        if corporate_actions:
+            ca_df = pd.concat(corporate_actions, ignore_index=True)
+            # Filter for Forward/Reverse Splits
+            splits = ca_df[ca_df['Description'].str.contains('Split', case=False, na=False)]
+            
+            for _, split in splits.iterrows():
+                ticker = split['Symbol']
+                # Parse ratio from description like "10 for 1"
+                match = re.search(r'(\d+)\s+for\s+(\d+)', split['Description'])
+                if match:
+                    ratio = float(match.group(1)) / float(match.group(2))
+                    split_dt = pd.to_datetime(split['Date/Time'].split(',')[0])
+                    
+                    # Adjust historical trades BEFORE this split
+                    mask = (trades['Symbol'] == ticker) & (trades['dt_v'] < split_dt)
+                    trades.loc[mask, 'qty_v'] *= ratio
+                    trades.loc[mask, 'prc_v'] /= ratio
 
+        # --- FIFO Calculation ---
         holdings = []
         for sym in trades['Symbol'].unique():
             lots = []
@@ -98,12 +110,13 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 4. TOP BAR (CORRECTED NET LOGIC) ---
+# --- 4. TOP BAR (FIXED NET LOGIC) ---
 st.title("🏦 Wealth Terminal Pro")
-sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
+sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
 data_fy = fy_map.get(sel_fy, {})
 
-stocks_pl, forex_pl, fy_comms = 0.0, 0.0, 0.0
+# Use the 'Net Realized P/L' directly from the performance summary
+stocks_pl, forex_pl = 0.0, 0.0
 perf_s = 'Realized & Unrealized Performance Summary'
 
 if perf_s in data_fy:
@@ -114,17 +127,11 @@ if perf_s in data_fy:
         stocks_pl = pdf[pdf[ct_c].str.contains('Stock', case=False)] [rt_c].apply(safe_num).sum()
         forex_pl = pdf[pdf[ct_c].str.contains('Forex|Cash', case=False)] [rt_c].apply(safe_num).sum()
 
-if 'Trades' in data_fy:
-    fy_comms = data_fy['Trades'][find_col(data_fy['Trades'], ['Comm'])].apply(safe_num).abs().sum()
-
-# Total Investment Calculation
-total_inv = (df_lots['qty'] * df_lots['price']).sum() + df_lots['comm'].sum() if not df_lots.empty else 0.0
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total Investment", f"${total_inv:,.2f}")
-m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}") # a) Already net of comms
-m3.metric("FY Commissions Paid", f"${fy_comms:,.2f}")
-m4.metric("FY Dividends", f"${get_metric('Dividends', ['Amount'], data_fy):,.2f}" if 'Dividends' in data_fy else "$0.00")
+m1, m2, m3 = st.columns(3)
+# a) Confirmed: Realized Total is already NET of commissions
+m1.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+m2.metric("Stocks Portion", f"${stocks_pl:,.2f}")
+m3.metric("Forex/Cash Portion", f"${forex_pl:,.2f}")
 
 # --- 5. HOLDINGS TABLES & CALCULATOR ---
-# (Existing table and calculator code follows here, already utilizing the dynamic splits)
+# (Rest of existing logic for rendering tables and FIFO calculator)
