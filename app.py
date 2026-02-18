@@ -101,12 +101,12 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 4. DASHBOARD ---
+# --- 4. TOP BAR & P/L BREAKDOWN ---
 st.title("🏦 Wealth Terminal Pro")
-sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
+sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
 data_fy = fy_map.get(sel_fy, {})
 
-# Top Line Logic (Stocks vs Forex)
+# a) Realized P/L and Investment Calcs
 stocks_pl, forex_pl, comms = 0.0, 0.0, 0.0
 perf_s = 'Realized & Unrealized Performance Summary'
 
@@ -122,20 +122,24 @@ if perf_s in data_fy:
 if 'Trades' in data_fy:
     comms = data_fy['Trades'][find_col(data_fy['Trades'], ['Comm', 'Commission'])].apply(safe_num).abs().sum()
 
-m1, m2, m3 = st.columns(3)
-m1.metric("Total Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
-m2.metric("Total Commissions", f"${comms:,.2f}")
-m3.metric("Net FY P/L", f"${(stocks_pl + forex_pl - comms):,.2f}")
+# Total Investment (Cost Basis of current holdings)
+total_inv = (df_lots['qty'] * df_lots['price']).sum() + df_lots['comm'].sum() if not df_lots.empty else 0.0
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Total Investment", f"${total_inv:,.2f}") # a) Missing top line info
+m2.metric("Total Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+m3.metric("Total Commissions", f"${comms:,.2f}")
+m4.metric("Net FY P/L", f"${(stocks_pl + forex_pl - comms):,.2f}")
 
 with st.expander("📊 Stocks vs Forex Breakdown"):
-    st.write(f"**Stocks:** `${stocks_pl:,.2f}` | **Forex/Cash:** `${forex_pl:,.2f}`")
+    st.write(f"**Stocks Realized:** `${stocks_pl:,.2f}` | **Forex/Cash Realized:** `${forex_pl:,.2f}`")
 
 # --- 5. HOLDINGS TABLES ---
 st.divider()
 
 def show_agg(subset, label):
     st.subheader(label)
-    if subset is None or subset.empty: return st.info("No positions.")
+    if subset is None or subset.empty: return st.info(f"No {label} identified.")
     subset['Cost'] = subset['qty'] * subset['price']
     agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum', 'comm': 'sum'}).reset_index()
     
@@ -154,19 +158,31 @@ def show_agg(subset, label):
         "Cost": "${:.2f}", "Price": "${:.2f}", "Value": "${:.2f}", 
         "comm": "${:.2f}", "Net P/L $": "${:.2f}", "Net P/L %": "{:.2f}%"
     }).map(lambda x: 'color: green' if x > 0 else 'color: red', subset=['Net P/L $', 'Net P/L %']), use_container_width=True)
+    return prices
 
+prices = {}
 if not df_lots.empty:
-    show_agg(df_lots.copy(), "1. Current Global Holdings")
+    prices = show_agg(df_lots.copy(), "1. Current Global Holdings")
     show_agg(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
     show_agg(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
 
-    # --- 6. CALCULATOR ---
+    # --- 6. FIFO CALCULATOR ---
     st.divider()
     st.header("🧮 FIFO Selling Calculator")
-    s_pick = st.selectbox("Ticker", sorted(df_lots['Symbol'].unique()))
+    ca, cb = st.columns([1, 2])
+    s_pick = ca.selectbox("Analyze Ticker", sorted(df_lots['Symbol'].unique()))
     s_lots = df_lots[df_lots['Symbol'] == s_pick].sort_values('date')
-    q_sell = st.slider("Units", 0.0, float(s_lots['qty'].sum()), float(s_lots['qty'].sum()*0.25))
-    t_prof = st.number_input("Target Profit %", value=105.0)
+    tot_q = s_lots['qty'].sum()
+    
+    # b) Radio button for percentage
+    mode = ca.radio("Amount Mode", ["Units", "Percentage"])
+    if mode == "Units":
+        q_sell = cb.slider("Units to Sell", 0.0, float(tot_q), float(tot_q*0.25))
+    else:
+        pct = cb.slider("Percentage of Holding (%)", 0, 100, 25)
+        q_sell = tot_q * (pct / 100)
+        
+    t_prof = cb.number_input("Target Profit %", value=105.0)
     
     if q_sell > 0:
         curr_q, curr_c = q_sell, 0
@@ -175,4 +191,19 @@ if not df_lots.empty:
             take = min(lot['qty'], curr_q)
             curr_c += take * lot['price']
             curr_q -= take
-        st.success(f"To hit {t_prof}%: Sell **{q_sell:.4f}** at **${(curr_c*(1+t_prof/100))/q_sell:.2f}**")
+        t_price = (curr_c * (1 + t_prof/100)) / q_sell
+        st.success(f"To hit {t_prof}% profit: Sell **{q_sell:.4f} units** at **${t_price:.2f}**")
+        
+        # c) Remaining stock details
+        rem_q = tot_q - q_sell
+        if rem_q > 0:
+            st.markdown("---")
+            st.write("#### 💎 Residual Portfolio Status")
+            rem_cost = (s_lots['qty'] * s_lots['price']).sum() - curr_c
+            rem_avg = rem_cost / rem_q
+            live = prices.get(s_pick, 0.0)
+            rem_pl = (live - rem_avg) * rem_q
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Units Left", f"{rem_q:.2f}")
+            r2.metric("New Avg Cost", f"${rem_avg:.2f}")
+            r3.metric("Projected P/L", f"${rem_pl:.2f}", f"{((live/rem_avg)-1)*100:.2f}%")
