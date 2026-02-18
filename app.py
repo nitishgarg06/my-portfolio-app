@@ -55,7 +55,6 @@ for tab in tabs:
             fy_data_map[tab] = parsed
             if "Trades" in parsed:
                 t_df = parsed["Trades"]
-                # Include both 'Order' and standard trades to ensure no missing data
                 all_trades_list.append(t_df)
     except: continue
 
@@ -86,7 +85,6 @@ if all_trades_list:
         holdings = []
         for sym in trades['Symbol'].unique():
             lots = []
-            # Filter for specific symbol trades
             sym_trades = trades[trades['Symbol'] == sym]
             for _, row in sym_trades.iterrows():
                 if row['qty'] > 0: 
@@ -113,7 +111,7 @@ st.title("🏦 Wealth Terminal Pro")
 sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
 data_fy = fy_data_map.get(sel_fy, {})
 
-# Improved Realized P/L Logic for Stocks vs Forex
+# Stocks vs Forex Realized P/L Split
 perf_sec = 'Realized & Unrealized Performance Summary'
 stocks_pl, forex_pl = 0.0, 0.0
 
@@ -123,7 +121,6 @@ if perf_sec in data_fy:
     cat_col = safe_find_col(perf_df, ['Asset Category'])
     
     if rt_col and cat_col:
-        # Clean the summary data
         perf_df = perf_df[~perf_df['Symbol'].str.contains('Total|Asset', case=False, na=False)]
         stocks_pl = perf_df[perf_df[cat_col].str.contains('Stock|Equity', case=False, na=False)][rt_col].apply(universal_clean).sum()
         forex_pl = perf_df[perf_df[cat_col].str.contains('Forex|Cash', case=False, na=False)][rt_col].apply(universal_clean).sum()
@@ -163,7 +160,6 @@ def render_table(subset, label):
     agg = subset.groupby('Symbol').agg({'qty': 'sum', 'Cost': 'sum', 'comm': 'sum'}).reset_index()
     agg['Avg Buy'] = agg['Cost'] / agg['qty']
     
-    # Live Price Fetching
     try:
         p_data = yf.download(agg['Symbol'].tolist(), period="1d")['Close'].iloc[-1]
         prices = p_data.to_dict() if isinstance(p_data, pd.Series) else {agg['Symbol'].iloc[0]: p_data}
@@ -184,11 +180,8 @@ if not df_lots.empty:
     render_table(df_lots.copy(), "1. Current Global Holdings")
     render_table(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
     render_table(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
-else:
-    st.warning("No Holdings could be calculated. Check if 'Trades' section is present in your sheet.")
 
-# --- 6. FIFO CALCULATOR ---
-if not df_lots.empty:
+    # --- 6. FIFO CALCULATOR ---
     st.divider()
     st.header("🧮 FIFO Selling Calculator")
     c_a, c_b = st.columns([1, 2])
