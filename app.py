@@ -2,76 +2,82 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
+st.set_page_config(layout="wide", page_title="Wealth Terminal Pro")
 st.title("🏦 Wealth Terminal: Topline Validation")
 
-# Utility to convert currency strings to numbers safely
-def clean(val):
-    return pd.to_numeric(str(val).replace('$','').replace(',','').replace('(','-').replace(')',''), errors='coerce').fillna(0)
+# Numeric cleaner
+def n(x): return pd.to_numeric(str(x).replace('$','').replace(',','').replace('(','-').replace(')',''), errors='coerce').fillna(0)
 
-# --- 1. DATA PULL ---
+# --- DATA EXTRACTION ---
 FY_LIST = ["FY24", "FY25", "FY26"]
-view_fy = st.sidebar.selectbox("Select Financial Year", FY_LIST, index=2)
+view_fy = st.sidebar.selectbox("Select View", FY_LIST, index=2)
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Function to get cleaned Trades and Performance for any year
-def get_fy_data(year):
+def get_full_metrics(year):
     df = conn.read(worksheet=year, ttl=0)
+    
+    # 1. Trades Section
     t_rows = df[df.iloc[:, 0].str.contains('Trades', na=False, case=False)]
     th = t_rows[t_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
     td = t_rows[t_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(th)]
     td.columns = th
     
+    # 2. Performance Section
     p_rows = df[df.iloc[:, 0].str.contains('Performance Summary|Realized', na=False, case=False)]
     ph = p_rows[p_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
     pd_data = p_rows[p_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(ph)]
     pd_data.columns = ph
+    
     return td, pd_data
 
-# --- 2. AGGREGATION ---
+# --- AGGREGATION ---
 try:
-    # Get Current FY
-    t_fy, p_fy = get_fy_data(view_fy)
-    
-    # Get Cumulative (Lifetime)
     all_t = []
     all_p = []
     for y in FY_LIST[:FY_LIST.index(view_fy)+1]:
-        t, p = get_fy_data(y)
-        all_t.append(t)
-        all_p.append(p)
-    df_t_lt = pd.concat(all_t)
-    df_p_lt = pd.concat(all_p)
+        td, pd_data = get_full_metrics(y)
+        td['FY_Ref'] = y
+        pd_data['FY_Ref'] = y
+        all_t.append(td)
+        all_p.append(pd_data)
 
-    # --- 3. CALCULATIONS ---
-    # Commissions Split (Simplified via Ticker length)
-    fy_s_comm = t_fy[t_fy['Symbol'].str.len() <= 5]['Comm/Fee'].apply(clean).sum()
-    fy_f_comm = t_fy[t_fy['Symbol'].str.len() > 5]['Comm/Fee'].apply(clean).sum()
-    lt_s_comm = df_t_lt[df_t_lt['Symbol'].str.len() <= 5]['Comm/Fee'].apply(clean).sum()
-    lt_f_comm = df_t_lt[df_t_lt['Symbol'].str.len() > 5]['Comm/Fee'].apply(clean).sum()
+    master_t = pd.concat(all_t)
+    master_p = pd.concat(all_p)
 
-    # Realized Split
-    fy_s_pnl = p_fy[p_fy['Category'].str.contains('Stock', na=False)]['Realized Total'].apply(clean).sum()
-    fy_f_pnl = p_fy[p_fy['Category'].str.contains('Forex|Cash', na=False)]['Realized Total'].apply(clean).sum()
-    lt_s_pnl = df_p_lt[df_p_lt['Category'].str.contains('Stock', na=False)]['Realized Total'].apply(clean).sum()
-    lt_f_pnl = df_p_lt[df_p_lt['Category'].str.contains('Forex|Cash', na=False)]['Realized Total'].apply(clean).sum()
+    # --- CALCULATIONS ---
+    # Current FY Data
+    curr_t = master_t[master_t['FY_Ref'] == view_fy]
+    curr_p = master_p[master_p['FY_Ref'] == view_fy]
+
+    # Commission Splits (Stock <= 5 chars, Forex > 5 chars)
+    f_s_com = curr_t[curr_t['Symbol'].str.len() <= 5]['Comm/Fee'].apply(n).sum()
+    f_f_com = curr_t[curr_t['Symbol'].str.len() > 5]['Comm/Fee'].apply(n).sum()
+    l_s_com = master_t[master_t['Symbol'].str.len() <= 5]['Comm/Fee'].apply(n).sum()
+    l_f_com = master_t[master_t['Symbol'].str.len() > 5]['Comm/Fee'].apply(n).sum()
+
+    # Realized Splits
+    f_s_pnl = curr_p[curr_p['Category'].str.contains('Stock|Equity', na=False)]['Realized Total'].apply(n).sum()
+    f_f_pnl = curr_p[curr_p['Category'].str.contains('Forex|Cash|Interest', na=False)]['Realized Total'].apply(n).sum()
+    l_s_pnl = master_p[master_p['Category'].str.contains('Stock|Equity', na=False)]['Realized Total'].apply(n).sum()
+    l_f_pnl = master_p[master_p['Category'].str.contains('Forex|Cash|Interest', na=False)]['Realized Total'].apply(n).sum()
 
     # Investment
-    fy_inv = (t_fy[t_fy['Qty'].apply(clean) > 0]['Qty'].apply(clean) * t_fy[t_fy['Qty'].apply(clean) > 0]['Price'].apply(clean)).sum()
-    lt_inv = (df_t_lt[df_t_lt['Qty'].apply(clean) > 0]['Qty'].apply(clean) * df_t_lt[df_t_lt['Qty'].apply(clean) > 0]['Price'].apply(clean)).sum()
+    f_inv = (curr_t[curr_t['Qty'].apply(n) > 0]['Qty'].apply(n) * curr_t[curr_t['Qty'].apply(n) > 0]['Price'].apply(n)).sum()
+    l_inv = (master_t[master_t['Qty'].apply(n) > 0]['Qty'].apply(n) * master_t[master_t['Qty'].apply(n) > 0]['Price'].apply(n)).sum()
 
-    # --- 4. DISPLAY ---
-    st.subheader(f"📊 {view_fy} Performance")
+    # --- DISPLAY ---
+    st.subheader(f"📊 {view_fy} Performance Summary")
     c1, c2, c3 = st.columns(3)
-    c1.metric(f"Investment ({view_fy})", f"${fy_inv:,.2f}")
-    c2.metric(f"Realized (Stock/FX)", f"${fy_s_pnl:,.2f} / ${fy_f_pnl:,.2f}")
-    c3.metric(f"Comm (Stock/FX)", f"${abs(fy_s_comm):,.2f} / ${abs(fy_f_comm):,.2f}")
+    c1.metric("FY Investment", f"${f_inv:,.2f}")
+    c2.metric("FY Realized (Stock / FX)", f"${f_s_pnl:,.2f} / ${f_f_pnl:,.2f}")
+    c3.metric("FY Comm (Stock / FX)", f"${abs(f_s_com):,.2f} / ${abs(f_f_com):,.2f}")
 
     st.subheader("🌐 Lifetime Master Totals")
     l1, l2, l3 = st.columns(3)
-    l1.metric("Lifetime Investment", f"${lt_inv:,.2f}")
-    l2.metric("Total Realized (Stock/FX)", f"${lt_s_pnl:,.2f} / ${lt_f_pnl:,.2f}")
-    l3.metric("Total Comm (Stock/FX)", f"${abs(lt_s_comm):,.2f} / ${abs(lt_f_comm):,.2f}")
+    l1.metric("Lifetime Investment", f"${l_inv:,.2f}")
+    l2.metric("Total Realized (Stock / FX)", f"${l_s_pnl:,.2f} / ${l_f_pnl:,.2f}")
+    l3.metric("Total Comm (Stock / FX)", f"${abs(l_s_com):,.2f} / ${abs(l_f_com):,.2f}")
 
 except Exception as e:
-    st.error(f"Error parsing data: {e}. Check if 'Trades' and 'Performance Summary' headers exist.")
+    st.error(f"Error extracting data. Please ensure worksheet tabs are named exactly FY24, FY25, FY26.")
