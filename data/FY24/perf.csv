@@ -1,5 +1,16 @@
-Asset Category,Symbol,Cost Adj.,Realized S/T Profit,Realized S/T Loss,Realized L/T Profit,Realized L/T Loss,Realized Total,Unrealized S/T Profit,Unrealized S/T Loss,Unrealized L/T Profit,Unrealized L/T Loss,Unrealized Total,Total,Code
-Stocks,NVDA,0,0,0,0,0,0,26.870792382,0,0,0,26.870792382,26.870792382,
-Stocks,SMCI,0,0,0,0,0,0,4.818663763,-2.700122519,0,0,2.118541244,2.118541244,
-Total,,0,0,0,0,0,0,31.689456145,-2.700122519,0,0,28.989333626,28.989333626,
-Total (All Assets),,0,0,0,0,0,0,31.689456145,-2.700122519,0,0,28.989333626,28.989333626,
+Asset Category,Symbol,Prior Quantity,Current Quantity,Prior Price,Current Price,Mark-to-Market P/L Position,Mark-to-Market P/L Transaction,Mark-to-Market P/L Commissions,Mark-to-Market P/L Other,Mark-to-Market P/L Total,Code
+Stocks,NVDA,0,0.66,--,123.54,28.4286181,-0.486566256,-0.953402715,0.014994,27.003643129,
+Stocks,SMCI,0,0.2481,--,819.35,7.289100306,-2.002284734,-3.000924064,0,2.285891508,
+Total,,,,,,35.717718406,-2.48885099,-3.954326779,0.014994,29.289534637,
+Forex,AUD,0,0.2797,1,1,0,0,0,0,0,
+Forex,USD,0,163.180131325,--,1.4994,-1.93050822,0.697871,-6.0458,0,-7.27843722,
+Total,,,,,,-1.93050822,0.697871,-6.0458,0,-7.27843722,
+Total (All Assets),,,,,,33.787210186,-1.79097999,-10.000126779,0.014994,22.011097417,
+Stocks,NVDA,0,0,0,0,0,0,26.870792382,0,0,0
+Stocks,SMCI,0,0,0,0,0,0,4.818663763,-2.700122519,0,0
+Total,,0,0,0,0,0,0,31.689456145,-2.700122519,0,0
+Total (All Assets),,0,0,0,0,0,0,31.689456145,-2.700122519,0,0
+Stocks,NVDA,NVIDIA CORP,13.806462,27.00364313,0,0,0,0,,,
+Stocks,SMCI,SUPER MICRO COMPUTER INC,2.28589152,2.28589152,0,0,0,0,,,
+Total,,,16.09235352,29.28953465,0,0,0,0,,,
+Total (All Assets),,,16.09235352,29.28953465,0,0,0,0,,,
