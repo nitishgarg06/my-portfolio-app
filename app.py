@@ -90,29 +90,33 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 4. LIVE PRICE FETCHING (SAFE MODE) ---
+# --- 4. START RENDERING ---
 st.title("🏦 Wealth Terminal Pro")
 curr_date = datetime.now().strftime('%d %b %Y')
 
+# --- 5. SAFE LIVE PRICE FETCHING ---
 prices = {}
 if not df_lots.empty:
     unique_tickers = sorted(df_lots['Symbol'].unique())
+    # Default to cost basis in case fetching fails
+    for tkr in unique_tickers:
+        prices[tkr] = df_lots[df_lots['Symbol'] == tkr]['price'].mean()
+        
     try:
-        # Fetch all prices at once for efficiency
-        data = yf.download(unique_tickers, period="1d")['Close']
-        for tkr in unique_tickers:
-            if len(unique_tickers) > 1:
-                prices[tkr] = data[tkr].iloc[-1]
-            else:
-                prices[tkr] = data.iloc[-1]
-    except:
-        st.sidebar.warning("Live prices unavailable. Using Avg Cost as placeholder.")
-        for tkr in unique_tickers:
-            prices[tkr] = df_lots[df_lots['Symbol'] == tkr]['price'].mean()
+        # Request data with a timeout
+        data = yf.download(unique_tickers, period="1d", timeout=5)['Close']
+        if not data.empty:
+            for tkr in unique_tickers:
+                # Handle single vs multiple ticker returns
+                val = data[tkr].iloc[-1] if len(unique_tickers) > 1 else data.iloc[-1]
+                if not pd.isna(val):
+                    prices[tkr] = val
+    except Exception as e:
+        st.sidebar.warning(f"Live Price Server Busy. Using Cost Basis for P/L.")
 
-# --- 5. TOP METRICS ---
+# --- 6. TOP METRICS ---
 if fy_map:
-    sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
+    sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
     data_fy = fy_map.get(sel_fy, {})
     stocks_pl, forex_pl = 0.0, 0.0
     perf_s = 'Realized & Unrealized Performance Summary'
@@ -130,15 +134,17 @@ if fy_map:
     m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
     m3.metric("Forex/Cash Impact", f"${forex_pl:,.2f}")
 
-# --- 6. HOLDINGS TABLES ---
+# --- 7. HOLDINGS TABLES ---
 st.divider()
 
 def render_table(subset, label):
     st.subheader(f"{label} (as of {curr_date})")
-    if subset.empty: return st.info(f"No {label} positions.")
+    if subset.empty: 
+        st.info(f"No {label} positions.")
+        return
     
     agg = subset.groupby('Symbol').agg({'qty': 'sum', 'price': 'mean', 'comm': 'sum'}).reset_index()
-    agg['Live Price'] = agg['Symbol'].map(prices).fillna(agg['price'])
+    agg['Live Price'] = agg['Symbol'].map(prices)
     agg['Total Basis'] = (agg['qty'] * agg['price']) + agg['comm']
     agg['Market Value'] = agg['qty'] * agg['Live Price']
     agg['P/L $'] = agg['Market Value'] - agg['Total Basis']
