@@ -6,13 +6,17 @@ import base64
 from datetime import datetime
 
 # --- CONFIG ---
-st.set_page_config(page_title="Wealth Terminal: Folder-Sync", layout="wide")
+st.set_page_config(page_title="Wealth Terminal Pro", layout="wide")
 
-# Fetch Secrets
-GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-GITHUB_REPO = st.secrets["GITHUB_REPO"]
-# Updated path to store in the 'data' folder
-FILE_PATH = "data/master_portfolio.csv" 
+# Safe Secrets Loading
+try:
+    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+    GITHUB_REPO = st.secrets["GITHUB_REPO"]
+except Exception:
+    st.error("Missing Secrets: Please ensure GITHUB_TOKEN and GITHUB_REPO are set in Streamlit Cloud.")
+    st.stop()
+
+FILE_PATH = "data/master_portfolio.csv"
 
 # --- UTILS ---
 def clean_numeric(val):
@@ -23,6 +27,7 @@ def clean_numeric(val):
     except: return 0.0
 
 def get_ibkr_section(df, section_name):
+    """Scans the sheet for Header and Data rows belonging to a specific section."""
     rows = df[df.iloc[:, 0].str.contains(section_name, na=False, case=False)]
     h_row = rows[rows.iloc[:, 1] == 'Header']
     d_rows = rows[rows.iloc[:, 1] == 'Data']
@@ -33,126 +38,115 @@ def get_ibkr_section(df, section_name):
         return data
     return pd.DataFrame()
 
-# --- GITHUB API HELPERS ---
+# --- GITHUB ENGINE ---
 def push_to_github(df):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     
+    # 1. Check for existing file SHA
     res = requests.get(url, headers=headers)
     sha = res.json().get('sha') if res.status_code == 200 else None
     
-    content = base64.b64encode(df.to_csv(index=False).encode()).decode()
-    data = {
-        "message": f"Sync Portfolio to data folder: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "content": content,
+    # 2. Encode Content
+    csv_content = df.to_csv(index=False)
+    encoded = base64.b64encode(csv_content.encode()).decode()
+    
+    # 3. Payload
+    payload = {
+        "message": f"Sync: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "content": encoded,
         "branch": "main"
     }
-    if sha: data["sha"] = sha
+    if sha: payload["sha"] = sha
     
-    put_res = requests.put(url, headers=headers, json=data)
+    put_res = requests.put(url, headers=headers, json=payload)
     return put_res.status_code in [200, 201]
 
-# --- THE APP ---
-st.title("🏦 Wealth Terminal: Data Folder Edition")
+# --- APP FLOW ---
+st.title("🏦 Wealth Terminal Pro")
 
-# 1. LOAD FROM GITHUB
+# Load existing data from GitHub on start
 if 'master_data' not in st.session_state:
     raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{FILE_PATH}?v={datetime.now().timestamp()}"
     try:
         gh_df = pd.read_csv(raw_url)
         st.session_state['master_data'] = gh_df
-        st.session_state['last_sync'] = "GitHub Cache"
+        st.session_state['last_sync'] = datetime.now().strftime("%H:%M:%S")
     except:
         st.session_state['master_data'] = None
 
-# 2. SIDEBAR SYNC
+# Sidebar Controls
 with st.sidebar:
-    st.header("⚙️ Data Lifecycle")
-    if st.button("🚀 Sync GSheets ➔ /data/ Folder"):
-        with st.status("Harmonizing Data...", expanded=True) as status:
+    st.header("⚙️ Data Sync")
+    if st.button("🚀 Push GSheets ➔ GitHub"):
+        with st.status("Syncing...", expanded=True) as status:
             conn = st.connection("gsheets", type=GSheetsConnection)
             trades_list = []
             
             for t in ["FY24", "FY25", "FY26"]:
-                st.write(f"Scanning {t}...")
+                st.write(f"Reading {t}...")
                 raw = conn.read(worksheet=t, ttl=0)
-                
-                # Extract Trades
                 df_t = get_ibkr_section(raw, 'Trades')
                 if not df_t.empty:
-                    # Capture the Realized P/L and Category to handle the top-line split
                     df_t['FY_Source'] = t
+                    # Add Realized P/L column for top-line metrics later
+                    if 'Realized P/L' in df_t.columns:
+                        df_t['Realized_PL_val'] = df_t['Realized P/L'].apply(clean_numeric)
                     trades_list.append(df_t)
             
             if trades_list:
                 master = pd.concat(trades_list).reset_index(drop=True)
+                master['Qty_val'] = master['Quantity'].apply(clean_numeric)
+                master['Prc_val'] = master['T. Price'].apply(clean_numeric)
+                master['Date_val'] = pd.to_datetime(master['Date/Time'].str.split(',').str[0]).dt.strftime('%Y-%m-%d')
                 
-                # Standard Cleaning
-                master['Qty_v'] = master['Quantity'].apply(clean_numeric)
-                master['Prc_v'] = master['T. Price'].apply(clean_numeric)
-                # Ensure realized P/L is captured for the top-line dashboard
-                if 'Realized P/L' in master.columns:
-                    master['Realized_PL'] = master['Realized P/L'].apply(clean_numeric)
-                
-                master['Date_v'] = pd.to_datetime(master['Date/Time'].str.split(',').str[0]).dt.strftime('%Y-%m-%d')
-                
-                # Stock Split Adjustment (Automated for master file)
+                # Automated Split Adjustments
                 for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
-                    mask = (master['Symbol'] == tkr) & (master['Date_v'] < dt)
-                    master.loc[mask, 'Qty_v'] *= 10
-                    master.loc[mask, 'Prc_v'] /= 10
+                    mask = (master['Symbol'] == tkr) & (master['Date_val'] < dt)
+                    master.loc[mask, 'Qty_val'] *= 10
+                    master.loc[mask, 'Prc_val'] /= 10
                 
                 if push_to_github(master):
-                    status.update(label="GitHub /data/ Folder Updated!", state="complete")
+                    status.update(label="Success! Data stored in GitHub /data folder.", state="complete")
                     st.session_state['master_data'] = master
                     st.rerun()
-            else:
-                st.error("No Trades found!")
+                else:
+                    st.error("GitHub Error: Verify your Repo name and PAT permissions.")
 
-# 3. DASHBOARD (Stage 2)
+# --- DASHBOARD ---
 if st.session_state.get('master_data') is not None:
     df = st.session_state['master_data']
     
-    # CALCULATE METRICS
-    # Group by FY for the selector
+    # 1. Performance Overview
     fy_options = sorted(df['FY_Source'].unique())
-    sel_fy = st.selectbox("View Financial Year Summary", fy_options, index=len(fy_options)-1)
+    sel_fy = st.selectbox("Select Financial Year Summary", fy_options, index=len(fy_options)-1)
     
-    fy_total_pl = df[df['FY_Source'] == sel_fy]['Realized_PL'].sum() if 'Realized_PL' in df.columns else 0.0
-    
-    m1, m2 = st.columns(2)
-    m1.metric(f"Net Realized P/L ({sel_fy})", f"${fy_total_pl:,.2f}")
-    m2.metric("Data Status", "Synced with GitHub")
+    fy_pl = df[df['FY_Source'] == sel_fy]['Realized_PL_val'].sum() if 'Realized_PL_val' in df.columns else 0.0
+    st.metric(f"Net Realized P/L ({sel_fy})", f"${fy_pl:,.2f}")
 
-    # FIFO HOLDINGS 
+    # 2. Holdings (FIFO Aggregate)
     holdings = []
     for sym in df['Symbol'].unique():
-        sym_df = df[df['Symbol'] == sym].sort_values('Date_v')
-        q_net = sym_df['Qty_v'].sum()
+        sym_df = df[df['Symbol'] == sym].sort_values('Date_val')
+        q_net = sym_df['Qty_val'].sum()
         if q_net > 0.01:
-            avg_c = sym_df[sym_df['Qty_v'] > 0]['Prc_v'].mean()
+            avg_c = sym_df[sym_df['Qty_val'] > 0]['Prc_val'].mean()
             holdings.append({'Ticker': sym, 'Units': q_net, 'Avg Cost': avg_c})
     
     df_h = pd.DataFrame(holdings)
     df_h.index = range(1, len(df_h) + 1)
-
+    
     st.subheader(f"Portfolio Holdings (as of {datetime.now().strftime('%d %b %Y')})")
     st.dataframe(df_h.style.format({"Units": "{:.2f}", "Avg Cost": "${:.2f}"}), use_container_width=True)
 
-    # FIFO CALCULATOR
+    # 3. FIFO Calculator
     st.divider()
     st.header("🧮 FIFO Selling Calculator")
-    ca, cb = st.columns([1, 2])
-    s_pick = ca.selectbox("Select Ticker", df_h['Ticker'])
+    c1, c2 = st.columns(2)
+    s_pick = c1.selectbox("Ticker", df_h['Ticker'])
+    target = c2.number_input("Target Profit %", value=110.0)
+    
     row = df_h[df_h['Ticker'] == s_pick].iloc[0]
-    
-    mode = ca.radio("Amount Type", ["Units", "Percentage"])
-    q_sell = cb.slider("Amount", 0.0, float(row['Units'])) if mode == "Units" else row['Units'] * (cb.slider("%", 0, 100, 25)/100)
-    target = cb.number_input("Target Profit %", value=110.0)
-    
-    target_price = row['Avg Cost'] * (target/100)
-    st.success(f"To hit {target}% profit: Sell at **${target_price:,.2f}**")
-    st.info(f"Residual Position: {row['Units'] - q_sell:.2f} units at ${row['Avg Cost']:,.2f}")
-
+    st.success(f"Sell at: **${(row['Avg Cost'] * (target/100)):,.2f}** for {target}% profit.")
 else:
-    st.info("👋 Welcome! Press the Sync button to create the /data/ folder and Master CSV in GitHub.")
+    st.info("No data found on GitHub. Click the sidebar button to Sync your Google Sheets.")
