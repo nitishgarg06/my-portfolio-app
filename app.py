@@ -10,7 +10,6 @@ st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="�
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def safe_num(val):
-    """Deep cleans currency strings and handles parentheses for negatives."""
     if val is None or pd.isna(val) or val == '': return 0.0
     s = str(val).strip().replace('$', '').replace(',', '')
     if '(' in s and ')' in s: 
@@ -19,14 +18,12 @@ def safe_num(val):
     except: return 0.0
 
 def safe_find(df, keywords):
-    """Finds a column name regardless of extra spaces or case."""
     for col in df.columns:
         if any(k.lower() in str(col).lower() for k in keywords):
             return col
     return None
 
 def parse_ibkr_grid(df):
-    """Standardizes the IBKR table grid for the app."""
     sections = {}
     if df is None or df.empty: return sections
     df = df.astype(str).replace('nan', '')
@@ -46,7 +43,6 @@ def parse_ibkr_grid(df):
 tabs = ["FY24", "FY25", "FY26"]
 fy_map = {}
 all_trades = []
-corporate_actions = []
 
 for t in tabs:
     try:
@@ -55,7 +51,6 @@ for t in tabs:
         if parsed:
             fy_map[t] = parsed
             if "Trades" in parsed: all_trades.append(parsed["Trades"])
-            if "Corporate Actions" in parsed: corporate_actions.append(parsed["Corporate Actions"])
     except: continue
 
 # --- 3. FIFO ENGINE ---
@@ -76,7 +71,7 @@ if all_trades:
         trades['dt_v'] = pd.to_datetime(trades[d_c].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['dt_v']).sort_values('dt_v')
 
-        # Fallback for Splits
+        # Split Fallbacks
         for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
             mask = (trades['Symbol'] == tkr) & (trades['dt_v'] < pd.to_datetime(dt))
             if not trades[mask].empty:
@@ -108,13 +103,13 @@ if all_trades:
 st.title("🏦 Wealth Terminal Pro")
 
 if not fy_map:
-    st.error("No data found in GSheets.")
+    st.error("Data connection failed.")
 else:
     sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
     data_fy = fy_map.get(sel_fy, {})
 
-    # Top Metrics Logic
-    stocks_pl, forex_pl, fy_comms = 0.0, 0.0, 0.0
+    # Top Metrics Calculation
+    stocks_pl, forex_pl, fy_divs = 0.0, 0.0, 0.0
     perf_s = 'Realized & Unrealized Performance Summary'
     
     if perf_s in data_fy:
@@ -122,24 +117,27 @@ else:
         rt_c = safe_find(pdf, ['Realized Total'])
         ct_c = safe_find(pdf, ['Asset Category'])
         if rt_c and ct_c:
-            # Fuzzy match to ensure we don't skip rows
             clean_p = pdf[~pdf['Symbol'].str.contains('Total|Asset', case=False, na=False)]
             stocks_pl = clean_p[clean_p[ct_c].str.contains('Stock|Equity', case=False, na=False)][rt_c].apply(safe_num).sum()
             forex_pl = clean_p[clean_p[ct_c].str.contains('Forex|Cash', case=False, na=False)][rt_c].apply(safe_num).sum()
 
-    if 'Trades' in data_fy:
-        tr_df = data_fy['Trades']
-        comm_col = safe_find(tr_df, ['Comm', 'Commission'])
-        fy_comms = tr_df[comm_col].apply(safe_num).abs().sum() if comm_col else 0.0
+    if 'Dividends' in data_fy:
+        div_df = data_fy['Dividends']
+        amt_col = safe_find(div_df, ['Amount'])
+        fy_divs = div_df[~div_df.apply(lambda r: r.astype(str).str.contains('Total', case=False).any(), axis=1)][amt_col].apply(safe_num).sum() if amt_col else 0.0
 
-    # a) Total investment top line
     total_inv = (df_lots['qty'] * df_lots['price']).sum() + df_lots['comm'].sum() if not df_lots.empty else 0.0
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Investment", f"${total_inv:,.2f}")
-    m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
-    m3.metric("FY Commissions", f"${fy_comms:,.2f}")
-    m4.metric("Forex/Cash Portion", f"${forex_pl:,.2f}")
+    m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}", help="Already net of commissions per IBKR")
+    m3.metric("Forex/Cash Impact", f"${forex_pl:,.2f}")
+    m4.metric("Dividends Received", f"${fy_divs:,.2f}")
+
+    with st.expander("📊 Detailed Realized Breakdown"):
+        st.write(f"**Stock Trading P/L:** `${stocks_pl:,.2f}`")
+        st.write(f"**Currency/Forex P/L:** `${forex_pl:,.2f}`")
+        st.caption("Note: 'Net Realized P/L' combines both Trading and Forex impact.")
 
     # --- 5. HOLDINGS TABLES ---
     st.divider()
@@ -148,11 +146,17 @@ else:
             st.subheader(label)
             if subset.empty: return st.info(f"No {label} positions.")
             agg = subset.groupby('Symbol').agg({'qty': 'sum', 'price': 'mean', 'comm': 'sum'}).reset_index()
-            agg['Total Cost'] = (agg['qty'] * agg['price']) + agg['comm']
-            agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Total Comm', 'Total Basis']
+            
+            # Re-calculating logic for the table columns you requested
+            agg['Gross Basis'] = agg['qty'] * agg['price']
+            agg['Net Basis'] = agg['Gross Basis'] + agg['comm']
+            
+            agg.columns = ['Ticker', 'Units', 'Avg Price', 'Commissions', 'Gross Basis', 'Net Basis (Inc. Comm)']
             agg.index = range(1, len(agg) + 1)
+            
             st.dataframe(agg.style.format({
-                "Units": "{:.2f}", "Avg Cost": "${:.2f}", "Total Comm": "${:.2f}", "Total Basis": "${:.2f}"
+                "Units": "{:.2f}", "Avg Price": "${:.2f}", "Commissions": "${:.2f}", 
+                "Gross Basis": "${:.2f}", "Net Basis (Inc. Comm)": "${:.2f}"
             }), use_container_width=True)
 
         render_table(df_lots.copy(), "1. Current Global Holdings")
@@ -167,14 +171,8 @@ else:
         s_lots = df_lots[df_lots['Symbol'] == s_pick].sort_values('date')
         tot_q = s_lots['qty'].sum()
         
-        # b) Radio button for percentage
         mode = ca.radio("Amount Mode", ["Units", "Percentage"])
-        if mode == "Units":
-            q_sell = cb.slider("Units to Sell", 0.0, float(tot_q), float(tot_q*0.25))
-        else:
-            pct = cb.slider("Percentage (%)", 0, 100, 25)
-            q_sell = tot_q * (pct / 100)
-            
+        q_sell = cb.slider("Amount to Sell", 0.0, float(tot_q), float(tot_q*0.25)) if mode == "Units" else tot_q * (cb.slider("% to Sell", 0, 100, 25) / 100)
         t_prof = cb.number_input("Target Profit %", value=105.0)
         
         if q_sell > 0:
@@ -185,9 +183,8 @@ else:
                 curr_c += take * lot['price']
                 curr_q -= take
             target_price = (curr_c * (1 + t_prof/100)) / q_sell
-            st.success(f"To hit {t_prof}% profit: Sell **{q_sell:.4f} units** at **${target_price:.2f}**")
+            st.success(f"Target Price for {t_prof}% Profit: **${(curr_c*(1+t_prof/100))/q_sell:.2f}**")
             
-            # c) Remaining stock details
             rem_q = tot_q - q_sell
             if rem_q > 0:
                 st.write("#### 💎 Residual Portfolio Status")
@@ -195,5 +192,3 @@ else:
                 r1, r2 = st.columns(2)
                 r1.metric("Units Left", f"{rem_q:.2f}")
                 r2.metric("New Avg Cost", f"${(rem_cost/rem_q):,.2f}")
-    else:
-        st.info("No holdings found. Ensure the 'Trades' section is present in your GSheet.")
