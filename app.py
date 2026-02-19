@@ -1,60 +1,54 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
-st.set_page_config(page_title="Data Validator", layout="wide")
-st.title("🔍 FY26 Topline Validation")
+# --- TOPLINE CALCULATION ENGINE ---
+def get_metrics(df_trades, df_perf, current_fy):
+    # 1. Helper to clean data
+    def cl(x): return pd.to_numeric(str(x).replace('$','').replace(',','').replace('(','-').replace(')',''), errors='coerce').fillna(0)
 
-# Connect directly to your FY26 Sheet
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df = conn.read(worksheet="FY26", ttl=0)
-    st.success("✅ Successfully connected to Google Sheet: FY26")
-except Exception as e:
-    st.error(f"❌ Connection Failed: {e}")
-    st.stop()
+    # 2. Filter FY vs Lifetime
+    fy_trades = df_trades[df_trades['FY'] == current_fy]
+    fy_perf = df_perf[df_perf['FY'] == current_fy] if not df_perf.empty else pd.DataFrame()
 
-# --- 1. COMMISSION CALCULATION ---
-st.subheader("1. Commission Breakdown")
-t_rows = df[df.iloc[:, 0].str.contains('Trades', na=False, case=False)]
-if not t_rows.empty:
-    h = t_rows[t_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
-    data = t_rows[t_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
-    data.columns = h
+    # 3. COMMISSION SPLITS (Stock vs Forex)
+    # FY Split
+    fy_stock_comm = fy_trades[fy_trades['Symbol'].str.len() <= 5]['Comm/Fee'].apply(cl).sum() # Assumes Stocks are short tickers
+    fy_forex_comm = fy_trades[fy_trades['Symbol'].str.len() > 5]['Comm/Fee'].apply(cl).sum()
     
-    # Target the 'Comm/Fee' column
-    comm_col = [c for c in data.columns if 'Comm' in c or 'Fee' in c][0]
-    total_comm = data[comm_col].apply(lambda x: float(str(x).replace('$','').replace(',','').replace('(','-').replace(')','')) if pd.notnull(x) else 0).sum()
-    
-    st.metric("Total Commission (FY26)", f"${abs(total_comm):,.2f}")
-    with st.expander("View Raw Trade Data Found"):
-        st.dataframe(data[[next(c for c in data.columns if 'Symbol' in c), comm_col]])
-else:
-    st.warning("⚠️ No 'Trades' section found in the FY26 sheet.")
+    # Lifetime Split
+    lt_stock_comm = df_trades[df_trades['Symbol'].str.len() <= 5]['Comm/Fee'].apply(cl).sum()
+    lt_forex_comm = df_trades[df_trades['Symbol'].str.len() > 5]['Comm/Fee'].apply(cl).sum()
 
-# --- 2. PERFORMANCE CALCULATION ---
-st.subheader("2. Realized P/L Breakdown")
-p_rows = df[df.iloc[:, 0].str.contains('Performance Summary|Realized', na=False, case=False)]
-if not p_rows.empty:
-    h_p = p_rows[p_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
-    p_data = p_rows[p_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h_p)]
-    p_data.columns = h_p
+    # 4. REALIZED P/L SPLITS
+    # FY Split
+    fy_s_pnl = fy_perf[fy_perf['Category'].str.contains('Stock|Equity', na=False)]['Realized Total'].apply(cl).sum()
+    fy_f_pnl = fy_perf[fy_perf['Category'].str.contains('Forex|Cash|Interest', na=False)]['Realized Total'].apply(cl).sum()
     
-    # Target 'Realized Total' and 'Category'
-    rt_col = [c for c in p_data.columns if 'Realized' in c and 'Total' in c][0]
-    cat_col = [c for c in p_data.columns if 'Category' in c or 'Asset' in c][0]
-    
-    p_data[rt_col] = p_data[rt_col].apply(lambda x: float(str(x).replace('$','').replace(',','').replace('(','-').replace(')','')) if pd.notnull(x) else 0)
-    
-    stocks_pnl = p_data[p_data[cat_col].str.contains('Stock|Equity', na=False, case=False)][rt_col].sum()
-    forex_pnl = p_data[p_data[cat_col].str.contains('Forex|Cash|Interest', na=False, case=False)][rt_col].sum()
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Stocks Realized P/L", f"${stocks_pnl:,.2f}")
-    c2.metric("Forex/Interest P/L", f"${forex_pnl:,.2f}")
-    c3.metric("TOTAL Realized P/L", f"${(stocks_pnl + forex_pnl):,.2f}")
-    
-    with st.expander("View Raw Performance Data Found"):
-        st.dataframe(p_data[[cat_col, rt_col]])
-else:
-    st.warning("⚠️ No 'Performance' section found in the FY26 sheet.")
+    # Lifetime Split
+    lt_s_pnl = df_perf[df_perf['Category'].str.contains('Stock|Equity', na=False)]['Realized Total'].apply(cl).sum()
+    lt_f_pnl = df_perf[df_perf['Category'].str.contains('Forex|Cash|Interest', na=False)]['Realized Total'].apply(cl).sum()
+
+    # 5. INVESTMENT
+    fy_invest = (fy_trades[fy_trades['Qty'] > 0]['Qty'] * fy_trades[fy_trades['Qty'] > 0]['Price']).sum()
+    # Lifetime Investment = Total Cost of Current Holdings (from FIFO)
+    lt_invest = (df_trades[df_trades['Qty'] > 0]['Qty'] * df_trades[df_trades['Qty'] > 0]['Price']).sum()
+
+    return {
+        "fy": {"invest": fy_invest, "s_pnl": fy_s_pnl, "f_pnl": fy_f_pnl, "s_comm": fy_stock_comm, "f_comm": fy_forex_comm},
+        "lt": {"invest": lt_invest, "s_pnl": lt_s_pnl, "f_pnl": lt_f_pnl, "s_comm": lt_stock_comm, "f_comm": lt_forex_comm}
+    }
+
+# --- DISPLAY INTERFACE ---
+m = get_metrics(df_all_trades, df_all_perf, view_fy)
+
+st.subheader(f"📊 {view_fy} Performance")
+c1, c2, c3 = st.columns(3)
+c1.metric("FY Investment", f"${m['fy']['invest']:,.2f}")
+c2.metric("FY Realized (Stock/FX)", f"${m['fy']['s_pnl']:,.2f} / ${m['fy']['f_pnl']:,.2f}")
+c3.metric("FY Comm (Stock/FX)", f"${m['fy']['s_comm']:,.2f} / ${m['fy']['f_comm']:,.2f}")
+
+st.subheader("🌐 Lifetime Totals")
+l1, l2, l3 = st.columns(3)
+l1.metric("Lifetime Investment", f"${m['lt']['invest']:,.2f}")
+l2.metric("Total Realized (Stock/FX)", f"${m['lt']['s_pnl']:,.2f} / ${m['lt']['f_pnl']:,.2f}")
+l3.metric("Total Comm (Stock/FX)", f"${m['lt']['s_comm']:,.2f} / ${m['lt']['f_comm']:,.2f}")
