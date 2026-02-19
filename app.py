@@ -1,13 +1,14 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 
 # --- CONFIG ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# --- 1. CONNECTION & UTILS ---
+# --- 1. CONNECTION & ROBUST UTILS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def safe_num(val):
@@ -37,6 +38,21 @@ def parse_ibkr_grid(df):
             data.columns = cols
             sections[name] = data
     return sections
+
+@st.cache_data(ttl=600)
+def get_google_price(ticker):
+    """Robust fallback: Scrapes Google Finance for the current price."""
+    try:
+        # We assume NASDAQ or NYSE for simplicity, can be adjusted
+        url = f"https://www.google.com/search?q={ticker}+stock+price"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # This selector often finds the large price text on Google Search
+        price_text = soup.find('span', {'class': 'I67upf'}).text or soup.find('span', {'jsname': 'vW79of'}).text
+        return safe_num(price_text)
+    except:
+        return None
 
 # --- 2. DATA LOADING ---
 tabs = ["FY24", "FY25", "FY26"]
@@ -90,34 +106,24 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 4. START RENDERING ---
+# --- 4. RENDER DASHBOARD ---
 st.title("🏦 Wealth Terminal Pro")
 curr_date = datetime.now().strftime('%d %b %Y')
 
-# --- 5. SAFE LIVE PRICE FETCHING ---
-prices = {}
-if not df_lots.empty:
-    unique_tickers = sorted(df_lots['Symbol'].unique())
-    # Default to cost basis in case fetching fails
-    for tkr in unique_tickers:
-        prices[tkr] = df_lots[df_lots['Symbol'] == tkr]['price'].mean()
-        
-    try:
-        # Request data with a timeout
-        data = yf.download(unique_tickers, period="1d", timeout=5)['Close']
-        if not data.empty:
-            for tkr in unique_tickers:
-                # Handle single vs multiple ticker returns
-                val = data[tkr].iloc[-1] if len(unique_tickers) > 1 else data.iloc[-1]
-                if not pd.isna(val):
-                    prices[tkr] = val
-    except Exception as e:
-        st.sidebar.warning(f"Live Price Server Busy. Using Cost Basis for P/L.")
-
-# --- 6. TOP METRICS ---
-if fy_map:
+if not fy_map:
+    st.error("GSheet Connection Failed.")
+else:
+    # --- METRICS & PRICE LOGIC ---
     sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
     data_fy = fy_map.get(sel_fy, {})
+    
+    # Calculate Live Prices
+    live_prices = {}
+    if not df_lots.empty:
+        for tkr in df_lots['Symbol'].unique():
+            p = get_google_price(tkr)
+            live_prices[tkr] = p if p else df_lots[df_lots['Symbol'] == tkr]['price'].mean()
+
     stocks_pl, forex_pl = 0.0, 0.0
     perf_s = 'Realized & Unrealized Performance Summary'
     if perf_s in data_fy:
@@ -127,24 +133,21 @@ if fy_map:
             clean_p = pdf[~pdf['Symbol'].str.contains('Total|Asset', case=False, na=False)]
             stocks_pl = clean_p[clean_p[ct_c].str.contains('Stock', case=False)][rt_c].apply(safe_num).sum()
             forex_pl = clean_p[clean_p[ct_c].str.contains('Forex|Cash', case=False)][rt_c].apply(safe_num).sum()
-
-    total_inv = (df_lots['qty'] * df_lots['price']).sum() + df_lots['comm'].sum() if not df_lots.empty else 0.0
+    
     m1, m2, m3 = st.columns(3)
-    m1.metric("Total Investment", f"${total_inv:,.2f}")
-    m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+    m1.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+    m2.metric("Stocks Portion", f"${stocks_pl:,.2f}")
     m3.metric("Forex/Cash Impact", f"${forex_pl:,.2f}")
 
-# --- 7. HOLDINGS TABLES ---
+# --- 5. HOLDINGS TABLES ---
 st.divider()
 
 def render_table(subset, label):
     st.subheader(f"{label} (as of {curr_date})")
-    if subset.empty: 
-        st.info(f"No {label} positions.")
-        return
+    if subset.empty: return st.info(f"No {label} positions identified.")
     
     agg = subset.groupby('Symbol').agg({'qty': 'sum', 'price': 'mean', 'comm': 'sum'}).reset_index()
-    agg['Live Price'] = agg['Symbol'].map(prices)
+    agg['Live Price'] = agg['Symbol'].map(live_prices)
     agg['Total Basis'] = (agg['qty'] * agg['price']) + agg['comm']
     agg['Market Value'] = agg['qty'] * agg['Live Price']
     agg['P/L $'] = agg['Market Value'] - agg['Total Basis']
