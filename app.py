@@ -89,4 +89,111 @@ if all_trades:
             sym_trades = trades[trades['Symbol'] == sym]
             for _, row in sym_trades.iterrows():
                 if row['qty_v'] > 0: 
-                    lots.append({'date': row['dt_v'], 'qty': row['qty_v'], 'price':
+                    lots.append({'date': row['dt_v'], 'qty': row['qty_v'], 'price': row['prc_v'], 'comm': row['cmm_v']})
+                elif row['qty_v'] < 0:
+                    sq = abs(row['qty_v'])
+                    while sq > 0 and lots:
+                        if lots[0]['qty'] <= sq:
+                            sq -= lots[0].pop('qty'); lots.pop(0)
+                        else:
+                            lots[0]['qty'] -= sq; sq = 0
+            for l in lots:
+                l['Symbol'] = sym
+                l['Type'] = "Long-Term" if (pd.Timestamp.now() - l['date']).days > 365 else "Short-Term"
+                holdings.append(l)
+        df_lots = pd.DataFrame(holdings)
+    except: pass
+
+# --- 4. DASHBOARD RENDER ---
+st.title("🏦 Wealth Terminal Pro")
+
+if not fy_map:
+    st.error("No data found in GSheets.")
+else:
+    sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
+    data_fy = fy_map.get(sel_fy, {})
+
+    # Top Metrics Logic
+    stocks_pl, forex_pl, fy_comms = 0.0, 0.0, 0.0
+    perf_s = 'Realized & Unrealized Performance Summary'
+    
+    if perf_s in data_fy:
+        pdf = data_fy[perf_s]
+        rt_c = safe_find(pdf, ['Realized Total'])
+        ct_c = safe_find(pdf, ['Asset Category'])
+        if rt_c and ct_c:
+            # Fuzzy match to ensure we don't skip rows
+            clean_p = pdf[~pdf['Symbol'].str.contains('Total|Asset', case=False, na=False)]
+            stocks_pl = clean_p[clean_p[ct_c].str.contains('Stock|Equity', case=False, na=False)][rt_c].apply(safe_num).sum()
+            forex_pl = clean_p[clean_p[ct_c].str.contains('Forex|Cash', case=False, na=False)][rt_c].apply(safe_num).sum()
+
+    if 'Trades' in data_fy:
+        tr_df = data_fy['Trades']
+        comm_col = safe_find(tr_df, ['Comm', 'Commission'])
+        fy_comms = tr_df[comm_col].apply(safe_num).abs().sum() if comm_col else 0.0
+
+    # a) Total investment top line
+    total_inv = (df_lots['qty'] * df_lots['price']).sum() + df_lots['comm'].sum() if not df_lots.empty else 0.0
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Investment", f"${total_inv:,.2f}")
+    m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+    m3.metric("FY Commissions", f"${fy_comms:,.2f}")
+    m4.metric("Forex/Cash Portion", f"${forex_pl:,.2f}")
+
+    # --- 5. HOLDINGS TABLES ---
+    st.divider()
+    if not df_lots.empty:
+        def render_table(subset, label):
+            st.subheader(label)
+            if subset.empty: return st.info(f"No {label} positions.")
+            agg = subset.groupby('Symbol').agg({'qty': 'sum', 'price': 'mean', 'comm': 'sum'}).reset_index()
+            agg['Total Cost'] = (agg['qty'] * agg['price']) + agg['comm']
+            agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Total Comm', 'Total Basis']
+            agg.index = range(1, len(agg) + 1)
+            st.dataframe(agg.style.format({
+                "Units": "{:.2f}", "Avg Cost": "${:.2f}", "Total Comm": "${:.2f}", "Total Basis": "${:.2f}"
+            }), use_container_width=True)
+
+        render_table(df_lots.copy(), "1. Current Global Holdings")
+        render_table(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
+        render_table(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
+        
+        # --- 6. CALCULATOR ---
+        st.divider()
+        st.header("🧮 FIFO Selling Calculator")
+        ca, cb = st.columns([1, 2])
+        s_pick = ca.selectbox("Analyze Ticker", sorted(df_lots['Symbol'].unique()))
+        s_lots = df_lots[df_lots['Symbol'] == s_pick].sort_values('date')
+        tot_q = s_lots['qty'].sum()
+        
+        # b) Radio button for percentage
+        mode = ca.radio("Amount Mode", ["Units", "Percentage"])
+        if mode == "Units":
+            q_sell = cb.slider("Units to Sell", 0.0, float(tot_q), float(tot_q*0.25))
+        else:
+            pct = cb.slider("Percentage (%)", 0, 100, 25)
+            q_sell = tot_q * (pct / 100)
+            
+        t_prof = cb.number_input("Target Profit %", value=105.0)
+        
+        if q_sell > 0:
+            curr_q, curr_c = q_sell, 0
+            for _, lot in s_lots.iterrows():
+                if curr_q <= 0: break
+                take = min(lot['qty'], curr_q)
+                curr_c += take * lot['price']
+                curr_q -= take
+            target_price = (curr_c * (1 + t_prof/100)) / q_sell
+            st.success(f"To hit {t_prof}% profit: Sell **{q_sell:.4f} units** at **${target_price:.2f}**")
+            
+            # c) Remaining stock details
+            rem_q = tot_q - q_sell
+            if rem_q > 0:
+                st.write("#### 💎 Residual Portfolio Status")
+                rem_cost = (s_lots['qty'] * s_lots['price']).sum() - curr_c
+                r1, r2 = st.columns(2)
+                r1.metric("Units Left", f"{rem_q:.2f}")
+                r2.metric("New Avg Cost", f"${(rem_cost/rem_q):,.2f}")
+    else:
+        st.info("No holdings found. Ensure the 'Trades' section is present in your GSheet.")
