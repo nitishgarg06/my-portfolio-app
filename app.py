@@ -6,17 +6,17 @@ from bs4 import BeautifulSoup
 import base64
 from datetime import datetime
 
-# --- 1. CONFIG & SECRETS ---
-st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
+# --- 1. CONFIG ---
+st.set_page_config(page_title="Wealth Terminal Pro", layout="wide")
 
 try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     GITHUB_REPO = st.secrets["GITHUB_REPO"]
-except Exception:
-    st.error("Secrets Error: Check GITHUB_TOKEN and GITHUB_REPO in Streamlit Secrets.")
+except:
+    st.error("Secrets Missing: Ensure GITHUB_TOKEN and GITHUB_REPO are in Streamlit Secrets.")
     st.stop()
 
-# --- 2. CORE UTILITIES ---
+# --- 2. HELPERS ---
 def clean_numeric(val):
     if val is None or pd.isna(val) or str(val).strip() == '': return 0.0
     s = str(val).strip().replace('$', '').replace(',', '')
@@ -25,20 +25,10 @@ def clean_numeric(val):
     except: return 0.0
 
 def fuzzy_find(df, keywords):
+    """Returns the first column name containing any of the keywords."""
     for col in df.columns:
         if any(k.lower() in str(col).lower() for k in keywords): return col
     return None
-
-def get_ibkr_section(df, section_name):
-    rows = df[df.iloc[:, 0].str.contains(section_name, na=False, case=False)]
-    h_row = rows[rows.iloc[:, 1] == 'Header']
-    d_rows = rows[rows.iloc[:, 1] == 'Data']
-    if not h_row.empty and not d_rows.empty:
-        cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
-        data = d_rows.iloc[:, 2:2+len(cols)]
-        data.columns = cols
-        return data
-    return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def get_live_price(ticker):
@@ -51,7 +41,7 @@ def get_live_price(ticker):
         return clean_numeric(price_tag.text) if price_tag else 0.0
     except: return 0.0
 
-# --- 3. GITHUB ENGINE ---
+# --- 3. DATA PERSISTENCE ---
 def push_to_github(df, fy, filename):
     path = f"data/{fy}/{filename}.csv"
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
@@ -65,145 +55,117 @@ def push_to_github(df, fy, filename):
 
 def load_from_github(fy, filename):
     url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/data/{fy}/{filename}.csv?v={datetime.now().timestamp()}"
-    try: return pd.read_csv(url)
+    try:
+        df = pd.read_csv(url)
+        return df if not df.empty else None
     except: return None
 
-# --- 4. SIDEBAR: ON-DEMAND SYNC ---
+# --- 4. SIDEBAR SYNC ---
 st.title("🏦 Wealth Terminal Pro")
-curr_date = datetime.now().strftime('%d %b %Y')
 FY_LIST = ["FY24", "FY25", "FY26"]
 
 with st.sidebar:
-    st.header("🔄 On-Demand Sync")
-    sync_fy = st.selectbox("Sync specific year", FY_LIST)
-    if st.button(f"🚀 Sync {sync_fy}"):
-        with st.status(f"Processing {sync_fy}...", expanded=True) as status:
+    st.header("🔄 Selective Sync")
+    sync_fy = st.selectbox("Year to Sync", FY_LIST)
+    if st.button(f"Sync {sync_fy}"):
+        with st.status(f"Processing {sync_fy}...") as status:
             conn = st.connection("gsheets", type=GSheetsConnection)
             raw = conn.read(worksheet=sync_fy, ttl=0)
-            t_df = get_ibkr_section(raw, 'Trades')
-            p_df = get_ibkr_section(raw, 'Realized & Unrealized Performance Summary')
-            if not t_df.empty: push_to_github(t_df, sync_fy, "trades")
-            if not p_df.empty: push_to_github(p_df, sync_fy, "perf")
+            
+            # Extract Trade section using raw slicing to avoid column index errors
+            rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False, case=False)]
+            if not rows.empty:
+                h = rows[rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
+                d = rows[rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
+                d.columns = h
+                push_to_github(d, sync_fy, "trades")
+            
+            # Performance section
+            p_rows = raw[raw.iloc[:, 0].str.contains('Performance Summary', na=False, case=False)]
+            if not p_rows.empty:
+                h = p_rows[p_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
+                d = p_rows[p_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
+                d.columns = h
+                push_to_github(d, sync_fy, "perf")
+            
             st.session_state[f'last_sync_{sync_fy}'] = datetime.now().strftime("%H:%M:%S")
             st.rerun()
 
-# --- 5. CUMULATIVE LOAD ENGINE ---
+# --- 5. THE DASHBOARD ---
 st.divider()
-view_fy = st.radio("Select View Horizon (Cumulative)", FY_LIST, index=len(FY_LIST)-1, horizontal=True)
+view_fy = st.radio("Cumulative View", FY_LIST, index=len(FY_LIST)-1, horizontal=True)
+years_active = FY_LIST[:FY_LIST.index(view_fy)+1]
 
-# Determine which years to load based on selection (e.g., if FY26, load 24, 25, 26)
-years_to_load = FY_LIST[:FY_LIST.index(view_fy)+1]
-
-all_trades = []
-all_perf = []
-
-for y in years_to_load:
+all_t, all_p = [], []
+for y in years_active:
     t = load_from_github(y, "trades")
     p = load_from_github(y, "perf")
-    if t is not None: 
-        t['Source_FY'] = y
-        all_trades.append(t)
-    if p is not None: 
-        p['Source_FY'] = y
-        all_perf.append(p)
+    if t is not None: t['FY_Src'] = y; all_t.append(t)
+    if p is not None: p['FY_Src'] = y; all_p.append(p)
 
-if all_trades:
-    df_trades = pd.concat(all_trades)
-    df_perf = pd.concat(all_perf) if all_perf else pd.DataFrame()
+if all_t:
+    trades_df = pd.concat(all_t)
+    perf_df = pd.concat(all_p) if all_p else pd.DataFrame()
 
-    # Harmonize Data
-    c_qty = fuzzy_find(df_trades, ['Qty'])
-    c_prc = fuzzy_find(df_trades, ['Price'])
-    c_dt = fuzzy_find(df_trades, ['Date'])
-    c_sym = fuzzy_find(df_trades, ['Symbol'])
-    c_cm = fuzzy_find(df_trades, ['Comm'])
+    # Column Mapping
+    c_q = fuzzy_find(trades_df, ['Qty', 'Quantity'])
+    c_p = fuzzy_find(trades_df, ['Price', 'T. Price'])
+    c_s = fuzzy_find(trades_df, ['Symbol', 'Ticker'])
+    c_d = fuzzy_find(trades_df, ['Date'])
+    c_c = fuzzy_find(trades_df, ['Comm'])
 
-    df_trades['Qty_v'] = df_trades[c_qty].apply(clean_numeric)
-    df_trades['Prc_v'] = df_trades[c_prc].apply(clean_numeric)
-    df_trades['CM_v'] = df_trades[c_cm].apply(clean_numeric).abs() if c_cm else 0.0
-    df_trades['DT_v'] = pd.to_datetime(df_trades[c_dt].str.split(',').str[0])
+    trades_df['Q_v'] = trades_df[c_q].apply(clean_numeric)
+    trades_df['P_v'] = trades_df[c_p].apply(clean_numeric)
+    trades_df['C_v'] = trades_df[c_c].apply(clean_numeric).abs() if c_c else 0.0
+    trades_df['DT'] = pd.to_datetime(trades_df[c_d].str.split(',').str[0], errors='coerce')
 
-    # FIFO Engine (Cumulative)
-    open_lots = []
-    for sym in df_trades[c_sym].unique():
-        sym_df = df_trades[df_trades[c_sym] == sym].sort_values('DT_v')
+    # FIFO Engine
+    holdings = []
+    for ticker in trades_df[c_s].unique():
+        sym_df = trades_df[trades_df[c_s] == ticker].sort_values('DT')
         lots = []
         for _, row in sym_df.iterrows():
-            if row['Qty_v'] > 0: lots.append({'dt': row['DT_v'], 'q': row['Qty_v'], 'p': row['Prc_v'], 'c': row['CM_v']})
-            elif row['Qty_v'] < 0:
-                sq = abs(row['Qty_v'])
+            if row['Q_v'] > 0: lots.append({'dt': row['DT'], 'q': row['Q_v'], 'p': row['P_v'], 'c': row['C_v']})
+            elif row['Q_v'] < 0:
+                sq = abs(row['Q_v'])
                 while sq > 0 and lots:
                     if lots[0]['q'] <= sq: sq -= lots.pop(0)['q']
                     else: lots[0]['q'] -= sq; sq = 0
         for l in lots:
-            l['Symbol'] = sym
+            l['Symbol'] = ticker
             l['Type'] = "Long-Term" if (pd.Timestamp.now() - l['dt']).days > 365 else "Short-Term"
-            open_lots.append(l)
+            holdings.append(l)
     
-    df_h = pd.DataFrame(open_lots)
+    df_h = pd.DataFrame(holdings)
 
-    # --- TOP LINE KPIs (Lifetime & FY) ---
-    
-    
-    # Lifetime Realized
-    lt_stocks = lt_forex = 0.0
-    if not df_perf.empty:
-        cat_c = fuzzy_find(df_perf, ['Category'])
-        rt_c = fuzzy_find(df_perf, ['Realized Total'])
-        lt_stocks = df_perf[df_perf[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum()
-        lt_forex = df_perf[df_perf[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum()
-
-    # Lifetime Investment
+    # Lifetime Metrics
     lt_invest = (df_h['q'] * df_h['p']).sum() + df_h['c'].sum() if not df_h.empty else 0.0
+    
+    # Realized Logic
+    lt_s = lt_f = 0.0
+    if not perf_df.empty:
+        cat_c = fuzzy_find(perf_df, ['Category'])
+        rt_c = fuzzy_find(perf_df, ['Realized Total', 'Realized P/L'])
+        lt_s = perf_df[perf_df[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum()
+        lt_f = perf_df[perf_df[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum()
 
     st.subheader("🌐 Lifetime Overview")
     k1, k2, k3 = st.columns(3)
     k1.metric("Lifetime Investment", f"${lt_invest:,.2f}")
-    k2.metric("Lifetime Realized P/L", f"${(lt_stocks + lt_forex):,.2f}")
-    k3.metric("Lifetime Forex Impact", f"${lt_forex:,.2f}")
-    
-    st.subheader(f"📅 {view_fy} Performance")
-    # FY Specific Realized
-    fy_perf = df_perf[df_perf['Source_FY'] == view_fy]
-    fy_s = fy_perf[fy_perf[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum()
-    fy_f = fy_perf[fy_perf[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum()
-    
-    m1, m2 = st.columns(2)
-    m1.metric(f"{view_fy} Realized P/L", f"${(fy_s + fy_f):,.2f}")
-    m2.metric(f"{view_fy} Stocks", f"${fy_s:,.2f}")
-    st.caption("ℹ️ *Disclaimer: Realized P/L is net of commissions.*")
+    k2.metric("Lifetime Realized P/L", f"${(lt_s + lt_f):,.2f}")
+    k3.metric("Lifetime Forex Impact", f"${lt_f:,.2f}")
 
-    # --- TABLES ---
-    def render_table(data, title):
-        st.subheader(f"{title} (as of {curr_date})")
-        if data.empty: return st.info("No holdings.")
-        agg = data.groupby('Symbol').agg({'q': 'sum', 'p': 'mean', 'c': 'sum'}).reset_index()
-        agg['Live Price'] = agg['Symbol'].apply(get_live_price)
-        agg['Total Basis'] = (agg['q'] * agg['p']) + agg['c']
-        agg['Market Value'] = agg['q'] * agg['Live Price']
-        agg['P/L $'] = agg['Market Value'] - agg['Total Basis']
-        agg['P/L %'] = (agg['P/L $'] / agg['Total Basis']) * 100
-        st.dataframe(agg.style.format({"q": "{:.2f}", "p": "${:.2f}", "Live Price": "${:.2f}", "Total Basis": "${:.2f}", "Market Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"}), use_container_width=True)
-
-    st.divider()
-    render_table(df_h, "1. Current Global Holdings")
-    c_st, c_lt = st.columns(2)
-    with c_st: render_table(df_h[df_h['Type'] == "Short-Term"], "2. Short-Term Holdings")
-    with c_lt: render_table(df_h[df_h['Type'] == "Long-Term"], "3. Long-Term Holdings")
-
-    # --- CALCULATOR ---
+    # Tables
     
     st.divider()
-    st.header("🧮 FIFO Selling Calculator")
-    c_pick, c_calc = st.columns([1, 2])
-    ticker = c_pick.selectbox("Select Stock", df_h['Symbol'].unique())
-    h_row = df_h[df_h['Symbol'] == ticker]
-    t_q, a_c = h_row['q'].sum(), h_row['p'].mean()
-    
-    mode = c_pick.radio("Input Mode", ["Units", "Percentage"])
-    s_q = c_calc.slider("Quantity", 0.0, float(t_q), float(t_q*0.25)) if mode == "Units" else t_q * (c_calc.slider("%", 0, 100, 25)/100)
-    target = c_calc.number_input("Target Profit %", value=110.0)
-    st.success(f"Sell at **${(a_c * (target/100)):,.2f}** | Residual: {t_q - s_q:.2f} units")
+    if not df_h.empty:
+        agg = df_h.groupby('Symbol').agg({'q': 'sum', 'p': 'mean', 'c': 'sum'}).reset_index()
+        agg['Live'] = agg['Symbol'].apply(get_live_price)
+        agg['Market Value'] = agg['q'] * agg['Live']
+        st.write("### Current Global Holdings")
+        st.dataframe(agg, use_container_width=True)
+    else:
+        st.info("No active holdings identified.")
 
 else:
-    st.info("No data found on GitHub. Please sync your years in the sidebar.")
+    st.info("Please sync at least one year in the sidebar to populate the dashboard.")
