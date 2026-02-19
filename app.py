@@ -20,37 +20,28 @@ def clean_numeric(val):
     try: return float(s)
     except: return 0.0
 
-def get_ibkr_section(df, section_name):
-    rows = df[df.iloc[:, 0].str.contains(section_name, na=False, case=False)]
-    h_row = rows[rows.iloc[:, 1] == 'Header']
-    d_rows = rows[rows.iloc[:, 1] == 'Data']
-    if not h_row.empty and not d_rows.empty:
-        cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
-        data = d_rows.iloc[:, 2:2+len(cols)]
-        data.columns = cols
-        return data
-    return pd.DataFrame()
+def fuzzy_find(df, keywords):
+    """Finds a column name that contains any of the keywords."""
+    for col in df.columns:
+        if any(k.lower() in str(col).lower() for k in keywords):
+            return col
+    return None
 
+# --- GITHUB ENGINE ---
 def push_to_github(df):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     res = requests.get(url, headers=headers)
     sha = res.json().get('sha') if res.status_code == 200 else None
-    
     encoded = base64.b64encode(df.to_csv(index=False).encode()).decode()
-    payload = {
-        "message": f"Portfolio Sync: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "content": encoded, "branch": "main"
-    }
+    payload = {"message": f"Sync: {datetime.now()}", "content": encoded, "branch": "main"}
     if sha: payload["sha"] = sha
-    
-    put_res = requests.put(url, headers=headers, json=payload)
-    return put_res.status_code in [200, 201]
+    return requests.put(url, headers=headers, json=payload).status_code in [200, 201]
 
-# --- APP FLOW ---
+# --- THE APP ---
 st.title("🏦 Wealth Terminal Pro")
 
-# 1. ATTEMPT TO LOAD FROM GITHUB
+# 1. LOAD MASTER DATA
 if 'master_data' not in st.session_state:
     raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{FILE_PATH}?v={datetime.now().timestamp()}"
     try:
@@ -58,89 +49,80 @@ if 'master_data' not in st.session_state:
     except:
         st.session_state['master_data'] = None
 
-# 2. SIDEBAR SYNC
+# 2. SIDEBAR SYNC (Kept for updates)
 with st.sidebar:
-    st.header("⚙️ Data Sync")
-    if st.button("🚀 Push GSheets ➔ GitHub Master"):
-        with st.status("Harmonizing Data...", expanded=True) as status:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            all_trades = []
-            
-            for t in ["FY24", "FY25", "FY26"]:
-                st.write(f"Processing {t}...")
-                raw = conn.read(worksheet=t, ttl=0)
-                
-                # Trades Section
-                df_t = get_ibkr_section(raw, 'Trades')
-                if not df_t.empty:
-                    df_t['FY_Source'] = t
-                    # Capture Realized PL & Category
-                    for col in ['Realized P/L', 'Asset Category']:
-                        if col in df_t.columns:
-                            df_t[f'clean_{col}'] = df_t[col]
-                    all_trades.append(df_t)
-            
-            if all_trades:
-                master = pd.concat(all_trades).reset_index(drop=True)
-                # Final Formatting
-                master['Qty_v'] = master['Quantity'].apply(clean_numeric)
-                master['Prc_v'] = master['T. Price'].apply(clean_numeric)
-                master['Date_v'] = pd.to_datetime(master['Date/Time'].str.split(',').str[0]).dt.strftime('%Y-%m-%d')
-                
-                # Split Adjustments
-                for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
-                    mask = (master['Symbol'] == tkr) & (master['Date_v'] < dt)
-                    master.loc[mask, 'Qty_v'] *= 10
-                    master.loc[mask, 'Prc_v'] /= 10
+    if st.button("🚀 Re-Sync GSheets ➔ GitHub"):
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        all_trades = []
+        for t in ["FY24", "FY25", "FY26"]:
+            raw = conn.read(worksheet=t, ttl=0)
+            rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False, case=False)]
+            h_row = rows[rows.iloc[:, 1] == 'Header']
+            d_rows = rows[rows.iloc[:, 1] == 'Data']
+            if not h_row.empty:
+                cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
+                data = d_rows.iloc[:, 2:2+len(cols)]
+                data.columns = cols
+                data['FY_Source'] = t
+                all_trades.append(data)
+        if all_trades:
+            master = pd.concat(all_trades).reset_index(drop=True)
+            if push_to_github(master):
+                st.session_state['master_data'] = master
+                st.rerun()
 
-                if push_to_github(master):
-                    status.update(label="GitHub Updated!", state="complete")
-                    st.session_state['master_data'] = master
-                    st.rerun()
-            else:
-                st.error("No trades found in Google Sheets.")
-
-# 3. DASHBOARD
+# 3. DASHBOARD LOGIC
 if st.session_state.get('master_data') is not None:
     df = st.session_state['master_data']
     
-    # Metrics Split
-    fy_options = sorted(df['FY_Source'].unique())
-    sel_fy = st.selectbox("Financial Year View", fy_options, index=len(fy_options)-1)
-    
-    fy_df = df[df['FY_Source'] == sel_fy]
-    
-    # Logic to split Forex vs Stock Realized P/L
-    stocks_pl = fy_df[fy_df['clean_Asset Category'].str.contains('Stock', na=False, case=False)]['clean_Realized P/L'].apply(clean_numeric).sum()
-    forex_pl = fy_df[fy_df['clean_Asset Category'].str.contains('Forex|Cash', na=False, case=False)]['clean_Realized P/L'].apply(clean_numeric).sum()
+    # Fuzzy Column Mapping
+    col_qty = fuzzy_find(df, ['Quantity', 'Qty'])
+    col_prc = fuzzy_find(df, ['T. Price', 'Price'])
+    col_sym = fuzzy_find(df, ['Symbol', 'Ticker'])
+    col_pl  = fuzzy_find(df, ['Realized P/L', 'Realized Total'])
+    col_cat = fuzzy_find(df, ['Asset Category', 'Category'])
+    col_dt  = fuzzy_find(df, ['Date/Time', 'Date'])
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
-    m2.metric("Stocks Realized", f"${stocks_pl:,.2f}")
-    m3.metric("Forex/Cash Realized", f"${forex_pl:,.2f}")
+    if all([col_qty, col_prc, col_sym]):
+        # Data Cleaning
+        df['Q_clean'] = df[col_qty].apply(clean_numeric)
+        df['P_clean'] = df[col_prc].apply(clean_numeric)
+        df['PL_clean'] = df[col_pl].apply(clean_numeric) if col_pl else 0.0
+        
+        # Metrics Split
+        fy_list = sorted(df['FY_Source'].unique()) if 'FY_Source' in df.columns else []
+        if fy_list:
+            sel_fy = st.selectbox("Financial Year", fy_list, index=len(fy_list)-1)
+            fy_df = df[df['FY_Source'] == sel_fy]
+            
+            # Stock vs Forex Logic
+            s_pl = fy_df[fy_df[col_cat].str.contains('Stock', na=False, case=False)]['PL_clean'].sum() if col_cat else 0.0
+            f_pl = fy_df[fy_df[col_cat].str.contains('Forex|Cash', na=False, case=False)]['PL_clean'].sum() if col_cat else 0.0
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Net Realized P/L", f"${(s_pl + f_pl):,.2f}")
+            m2.metric("Stocks", f"${s_pl:,.2f}")
+            m3.metric("Forex/Impact", f"${f_pl:,.2f}")
 
-    # Holdings Table (FIFO)
-    holdings = []
-    for sym in df['Symbol'].unique():
-        sym_df = df[df['Symbol'] == sym].sort_values('Date_v')
-        q_net = sym_df['Qty_v'].sum()
-        if q_net > 0.01:
-            avg_c = sym_df[sym_df['Qty_v'] > 0]['Prc_v'].mean()
-            holdings.append({'Ticker': sym, 'Units': q_net, 'Avg Cost': avg_c})
-    
-    df_h = pd.DataFrame(holdings)
-    df_h.index = range(1, len(df_h) + 1)
-    
-    st.subheader(f"Portfolio Holdings (as of {datetime.now().strftime('%d %b %Y')})")
-    st.dataframe(df_h.style.format({"Units": "{:.2f}", "Avg Cost": "${:.2f}"}), use_container_width=True)
+        # FIFO Holdings 
+        holdings = []
+        for sym in df[col_sym].unique():
+            sym_df = df[df[col_sym] == sym]
+            q_net = sym_df['Q_clean'].sum()
+            if q_net > 0.01:
+                avg_c = sym_df[sym_df['Q_clean'] > 0]['P_clean'].mean()
+                holdings.append({'Ticker': sym, 'Units': q_net, 'Avg Cost': avg_c})
+        
+        if holdings:
+            df_h = pd.DataFrame(holdings)
+            st.subheader(f"Current Holdings (as of {datetime.now().strftime('%d %b %Y')})")
+            st.dataframe(df_h.style.format({"Units": "{:.2f}", "Avg Cost": "${:.2f}"}), use_container_width=True)
+        else:
+            st.warning("No active holdings found in the Master File.")
 
-    # Calculator
-    st.divider()
-    st.header("🧮 FIFO Selling Calculator")
-    c1, c2 = st.columns(2)
-    s_pick = c1.selectbox("Ticker", df_h['Ticker'])
-    row = df_h[df_h['Ticker'] == s_pick].iloc[0]
-    target = c2.number_input("Target Profit %", value=110.0)
-    st.success(f"Sell at: **${(row['Avg Cost'] * (target/100)):,.2f}** for {target}% profit.")
+    # --- DEBUGGER (Visible if info is missing) ---
+    with st.expander("🛠️ Master File Inspector"):
+        st.write("Current Columns in GitHub File:", df.columns.tolist())
+        st.write("Preview of Data:", df.head())
 else:
-    st.info("No Master Data on GitHub. Click the sidebar button to Sync.")
+    st.info("No Master Data found. Please use the sidebar to Sync.")
