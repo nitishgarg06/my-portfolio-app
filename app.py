@@ -2,21 +2,20 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import base64
 from datetime import datetime
 
-# --- 1. CONFIG ---
-st.set_page_config(page_title="Wealth Terminal Pro", layout="wide")
+# --- 1. CONFIG & SECRETS ---
+st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
 try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     GITHUB_REPO = st.secrets["GITHUB_REPO"]
 except:
-    st.error("Secrets Missing: Ensure GITHUB_TOKEN and GITHUB_REPO are in Streamlit Secrets.")
+    st.error("Secrets Missing: Check GITHUB_TOKEN and GITHUB_REPO in Streamlit Settings.")
     st.stop()
 
-# --- 2. HELPERS ---
+# --- 2. CORE UTILITIES ---
 def clean_numeric(val):
     if val is None or pd.isna(val) or str(val).strip() == '': return 0.0
     s = str(val).strip().replace('$', '').replace(',', '')
@@ -25,147 +24,161 @@ def clean_numeric(val):
     except: return 0.0
 
 def fuzzy_find(df, keywords):
-    """Returns the first column name containing any of the keywords."""
     for col in df.columns:
         if any(k.lower() in str(col).lower() for k in keywords): return col
     return None
 
-@st.cache_data(ttl=3600)
-def get_live_price(ticker):
-    try:
-        url = f"https://www.google.com/search?q={ticker}+stock+price"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        price_tag = soup.find('span', {'class': 'I67upf'}) or soup.find('span', {'jsname': 'vW79of'})
-        return clean_numeric(price_tag.text) if price_tag else 0.0
-    except: return 0.0
+def fetch_static_prices(tickers):
+    """Fetches prices once to save into the Static Cache CSV."""
+    price_data = []
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    for t in tickers:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}"
+            res = requests.get(url, headers=headers, timeout=5).json()
+            p = res['chart']['result'][0]['meta']['regularMarketPrice']
+            price_data.append({"Symbol": t, "StaticPrice": p, "CacheDate": datetime.now().strftime("%Y-%m-%d %H:%M")})
+        except:
+            price_data.append({"Symbol": t, "StaticPrice": 0.0, "CacheDate": "Error"})
+    return pd.DataFrame(price_data)
 
-# --- 3. DATA PERSISTENCE ---
-def push_to_github(df, fy, filename):
-    path = f"data/{fy}/{filename}.csv"
+# --- 3. GITHUB PERSISTENCE ---
+def push_to_github(df, path):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     res = requests.get(url, headers=headers)
     sha = res.json().get('sha') if res.status_code == 200 else None
     content = base64.b64encode(df.to_csv(index=False).encode()).decode()
-    payload = {"message": f"Sync {fy}: {datetime.now()}", "content": content, "branch": "main"}
+    payload = {"message": f"Sync {path}", "content": content, "branch": "main"}
     if sha: payload["sha"] = sha
     return requests.put(url, headers=headers, json=payload).status_code in [200, 201]
 
-def load_from_github(fy, filename):
-    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/data/{fy}/{filename}.csv?v={datetime.now().timestamp()}"
-    try:
-        df = pd.read_csv(url)
-        return df if not df.empty else None
+def load_from_github(path):
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{path}?v={datetime.now().timestamp()}"
+    try: return pd.read_csv(url)
     except: return None
 
-# --- 4. SIDEBAR SYNC ---
+# --- 4. SIDEBAR SYNC ENGINE ---
 st.title("🏦 Wealth Terminal Pro")
 FY_LIST = ["FY24", "FY25", "FY26"]
+curr_date = datetime.now().strftime('%d %b %Y')
 
 with st.sidebar:
-    st.header("🔄 Selective Sync")
+    st.header("🔄 On-Demand Sync")
     sync_fy = st.selectbox("Year to Sync", FY_LIST)
-    if st.button(f"Sync {sync_fy}"):
+    if st.button(f"🚀 Sync {sync_fy}"):
         with st.status(f"Processing {sync_fy}...") as status:
             conn = st.connection("gsheets", type=GSheetsConnection)
             raw = conn.read(worksheet=sync_fy, ttl=0)
             
-            # Extract Trade section using raw slicing to avoid column index errors
-            rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False, case=False)]
-            if not rows.empty:
-                h = rows[rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
-                d = rows[rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
+            # Extract Sections
+            trades_rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False, case=False)]
+            if not trades_rows.empty:
+                h = trades_rows[trades_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
+                d = trades_rows[trades_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
                 d.columns = h
-                push_to_github(d, sync_fy, "trades")
+                push_to_github(d, f"data/{sync_fy}/trades.csv")
+                
+                # Update Price Cache for all current tickers
+                price_df = fetch_static_prices(d['Symbol'].unique().tolist())
+                push_to_github(price_df, "data/price_cache.csv")
             
-            # Performance section
-            p_rows = raw[raw.iloc[:, 0].str.contains('Performance Summary', na=False, case=False)]
-            if not p_rows.empty:
-                h = p_rows[p_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
-                d = p_rows[p_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
+            perf_rows = raw[raw.iloc[:, 0].str.contains('Performance Summary', na=False, case=False)]
+            if not perf_rows.empty:
+                h = perf_rows[perf_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
+                d = perf_rows[perf_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
                 d.columns = h
-                push_to_github(d, sync_fy, "perf")
+                push_to_github(d, f"data/{sync_fy}/perf.csv")
             
-            st.session_state[f'last_sync_{sync_fy}'] = datetime.now().strftime("%H:%M:%S")
+            st.success("Sync Complete!")
             st.rerun()
 
-# --- 5. THE DASHBOARD ---
+# --- 5. CUMULATIVE DASHBOARD ---
 st.divider()
-view_fy = st.radio("Cumulative View", FY_LIST, index=len(FY_LIST)-1, horizontal=True)
+view_fy = st.radio("Select Dashboard View (Cumulative)", FY_LIST, index=len(FY_LIST)-1, horizontal=True)
 years_active = FY_LIST[:FY_LIST.index(view_fy)+1]
 
+# Load Waterfall
 all_t, all_p = [], []
 for y in years_active:
-    t = load_from_github(y, "trades")
-    p = load_from_github(y, "perf")
-    if t is not None: t['FY_Src'] = y; all_t.append(t)
-    if p is not None: p['FY_Src'] = y; all_p.append(p)
+    t, p = load_from_github(f"data/{y}/trades.csv"), load_from_github(f"data/{y}/perf.csv")
+    if t is not None: t['Src_FY'] = y; all_t.append(t)
+    if p is not None: p['Src_FY'] = y; all_p.append(p)
+
+prices_df = load_from_github("data/price_cache.csv")
 
 if all_t:
-    trades_df = pd.concat(all_t)
-    perf_df = pd.concat(all_p) if all_p else pd.DataFrame()
-
-    # Column Mapping
-    c_q = fuzzy_find(trades_df, ['Qty', 'Quantity'])
-    c_p = fuzzy_find(trades_df, ['Price', 'T. Price'])
-    c_s = fuzzy_find(trades_df, ['Symbol', 'Ticker'])
-    c_d = fuzzy_find(trades_df, ['Date'])
-    c_c = fuzzy_find(trades_df, ['Comm'])
-
-    trades_df['Q_v'] = trades_df[c_q].apply(clean_numeric)
-    trades_df['P_v'] = trades_df[c_p].apply(clean_numeric)
-    trades_df['C_v'] = trades_df[c_c].apply(clean_numeric).abs() if c_c else 0.0
-    trades_df['DT'] = pd.to_datetime(trades_df[c_d].str.split(',').str[0], errors='coerce')
+    df_trades = pd.concat(all_t)
+    df_perf = pd.concat(all_p) if all_p else pd.DataFrame()
 
     # FIFO Engine
-    holdings = []
-    for ticker in trades_df[c_s].unique():
-        sym_df = trades_df[trades_df[c_s] == ticker].sort_values('DT')
+    c_q, c_p, c_s, c_d, c_c = fuzzy_find(df_trades, ['Qty']), fuzzy_find(df_trades, ['Price']), fuzzy_find(df_trades, ['Symbol']), fuzzy_find(df_trades, ['Date']), fuzzy_find(df_trades, ['Comm'])
+    df_trades['Q_v'] = df_trades[c_q].apply(clean_numeric)
+    df_trades['P_v'] = df_trades[c_p].apply(clean_numeric)
+    df_trades['C_v'] = df_trades[c_c].apply(clean_numeric).abs() if c_c else 0.0
+    df_trades['DT_v'] = pd.to_datetime(df_trades[c_d].str.split(',').str[0], errors='coerce')
+
+    open_lots = []
+    for ticker in df_trades[c_s].unique():
+        sym_df = df_trades[df_trades[c_s] == ticker].sort_values('DT_v')
         lots = []
         for _, row in sym_df.iterrows():
-            if row['Q_v'] > 0: lots.append({'dt': row['DT'], 'q': row['Q_v'], 'p': row['P_v'], 'c': row['C_v']})
+            if row['Q_v'] > 0:
+                lots.append({'dt': row['DT_v'], 'q': row['Q_v'], 'p': row['P_v'], 'c': row['C_v']})
             elif row['Q_v'] < 0:
-                sq = abs(row['Q_v'])
-                while sq > 0 and lots:
-                    if lots[0]['q'] <= sq: sq -= lots.pop(0)['q']
-                    else: lots[0]['q'] -= sq; sq = 0
+                sell_q = abs(row['Qty_v'])
+                while sell_q > 0 and lots:
+                    if lots[0]['q'] <= sell_q: sell_q -= lots.pop(0)['q']
+                    else: lots[0]['q'] -= sell_q; sell_q = 0
         for l in lots:
             l['Symbol'] = ticker
-            l['Type'] = "Long-Term" if (pd.Timestamp.now() - l['dt']).days > 365 else "Short-Term"
-            holdings.append(l)
+            l['Status'] = "Long-Term" if (pd.Timestamp.now() - l['dt']).days > 365 else "Short-Term"
+            open_lots.append(l)
     
-    df_h = pd.DataFrame(holdings)
+    df_h = pd.DataFrame(open_lots)
 
-    # Lifetime Metrics
-    lt_invest = (df_h['q'] * df_h['p']).sum() + df_h['c'].sum() if not df_h.empty else 0.0
+    # --- TOP LINE KPIs ---
     
-    # Realized Logic
-    lt_s = lt_f = 0.0
-    if not perf_df.empty:
-        cat_c = fuzzy_find(perf_df, ['Category'])
-        rt_c = fuzzy_find(perf_df, ['Realized Total', 'Realized P/L'])
-        lt_s = perf_df[perf_df[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum()
-        lt_f = perf_df[perf_df[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum()
+    
+    total_inv = (df_h['q'] * df_h['p']).sum() + df_h['c'].sum() if not df_h.empty else 0.0
+    
+    cat_c, rt_c = fuzzy_find(df_perf, ['Category']), fuzzy_find(df_perf, ['Realized Total'])
+    lt_s = df_perf[df_perf[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum() if not df_perf.empty else 0.0
+    lt_f = df_perf[df_perf[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum() if not df_perf.empty else 0.0
 
     st.subheader("🌐 Lifetime Overview")
     k1, k2, k3 = st.columns(3)
-    k1.metric("Lifetime Investment", f"${lt_invest:,.2f}")
+    k1.metric("Lifetime Investment", f"${total_inv:,.2f}")
     k2.metric("Lifetime Realized P/L", f"${(lt_s + lt_f):,.2f}")
     k3.metric("Lifetime Forex Impact", f"${lt_f:,.2f}")
+    st.caption("ℹ️ *Disclaimer: Total Realized P/L is net of commissions.*")
 
-    # Tables
-    
+    # --- TABLES ---
+    def render_table(data, title):
+        st.subheader(f"{title} (as of {curr_date})")
+        if data.empty: return st.info("No active holdings.")
+        
+        agg = data.groupby('Symbol').agg({'q': 'sum', 'p': 'mean', 'c': 'sum'}).reset_index()
+        
+        # Merge with Static Price Cache
+        if prices_df is not None:
+            agg = agg.merge(prices_df[['Symbol', 'StaticPrice']], on='Symbol', how='left').fillna(0)
+        else:
+            agg['StaticPrice'] = 0.0
+
+        agg['Total Basis'] = (agg['q'] * agg['p']) + agg['c']
+        agg['Value'] = agg['q'] * agg['StaticPrice']
+        agg['P/L $'] = agg['Value'] - agg['Total Basis']
+        agg['P/L %'] = (agg['P/L $'] / agg['Total Basis'] * 100) if not agg.empty else 0.0
+        
+        agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Comms', 'Live Price', 'Total Basis', 'Market Value', 'P/L $', 'P/L %']
+        st.dataframe(agg.style.format({"Units": "{:.2f}", "Avg Cost": "${:.2f}", "Comms": "${:.2f}", "Live Price": "${:.2f}", "Total Basis": "${:.2f}", "Market Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"}), use_container_width=True)
+
     st.divider()
-    if not df_h.empty:
-        agg = df_h.groupby('Symbol').agg({'q': 'sum', 'p': 'mean', 'c': 'sum'}).reset_index()
-        agg['Live'] = agg['Symbol'].apply(get_live_price)
-        agg['Market Value'] = agg['q'] * agg['Live']
-        st.write("### Current Global Holdings")
-        st.dataframe(agg, use_container_width=True)
-    else:
-        st.info("No active holdings identified.")
+    render_table(df_h, "1. Current Global Holdings")
+    c1, c2 = st.columns(2)
+    with c1: render_table(df_h[df_h['Status'] == "Short-Term"], "2. Short-Term Holdings")
+    with c2: render_table(df_h[df_h['Status'] == "Long-Term"], "3. Long-Term Holdings")
 
 else:
-    st.info("Please sync at least one year in the sidebar to populate the dashboard.")
+    st.info("No data found. Use the sidebar to sync your Financial Years from Google Sheets.")
