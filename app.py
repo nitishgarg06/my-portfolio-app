@@ -58,9 +58,9 @@ def load_from_github(path):
         df = pd.read_csv(url)
         return df if not df.empty else None
     except:
-        return None # Graceful fail if file doesn't exist
+        return None
 
-# --- 4. SIDEBAR SYNC ENGINE ---
+# --- 4. SIDEBAR SYNC ---
 st.title("🏦 Wealth Terminal Pro")
 FY_LIST = ["FY24", "FY25", "FY26"]
 curr_date = datetime.now().strftime('%d %b %Y')
@@ -73,17 +73,18 @@ with st.sidebar:
             conn = st.connection("gsheets", type=GSheetsConnection)
             raw = conn.read(worksheet=sync_fy, ttl=0)
             
-            # TRADE SYNC
+            # Find TRADES Section
             trades_rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False, case=False)]
             if not trades_rows.empty:
                 h = trades_rows[trades_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
                 d = trades_rows[trades_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(h)]
                 d.columns = h
                 push_to_github(d, f"data/{sync_fy}/trades.csv")
+                # Update Price Cache
                 price_df = fetch_static_prices(d['Symbol'].unique().tolist())
                 push_to_github(price_df, "data/price_cache.csv")
             
-            # PERFORMANCE SYNC
+            # Find PERFORMANCE Section
             perf_rows = raw[raw.iloc[:, 0].str.contains('Performance Summary', na=False, case=False)]
             if not perf_rows.empty:
                 h = perf_rows[perf_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
@@ -91,43 +92,47 @@ with st.sidebar:
                 d.columns = h
                 push_to_github(d, f"data/{sync_fy}/perf.csv")
             
-            st.success(f"{sync_fy} Sync Complete!")
+            st.success(f"{sync_fy} Synced!")
             st.rerun()
 
-# --- 5. CUMULATIVE DASHBOARD ---
+# --- 5. DATA LOADING & DIAGNOSTICS ---
 st.divider()
-view_fy = st.radio("Select Dashboard View (Cumulative)", FY_LIST, index=len(FY_LIST)-1, horizontal=True)
+view_fy = st.radio("Select View", FY_LIST, index=len(FY_LIST)-1, horizontal=True)
 years_active = FY_LIST[:FY_LIST.index(view_fy)+1]
 
-all_t, all_p = [], []
-for y in years_active:
-    t_path = f"data/{y}/trades.csv"
-    p_path = f"data/{y}/perf.csv"
-    t, p = load_from_github(t_path), load_from_github(p_path)
-    if t is not None: t['Src_FY'] = y; all_t.append(t)
-    if p is not None: p['Src_FY'] = y; all_p.append(p)
+with st.expander("🛠️ Debug: File Health Check"):
+    all_t, all_p = [], []
+    for y in years_active:
+        t = load_from_github(f"data/{y}/trades.csv")
+        p = load_from_github(f"data/{y}/perf.csv")
+        st.write(f"FY {y}: Trades {'✅' if t is not None else '❌'} | Perf {'✅' if p is not None else '❌'}")
+        if t is not None: t['FY_Source'] = y; all_t.append(t)
+        if p is not None: p['FY_Source'] = y; all_p.append(p)
+    
+    prices_df = load_from_github("data/price_cache.csv")
+    st.write(f"Price Cache: {'✅' if prices_df is not None else '❌'}")
 
-prices_df = load_from_github("data/price_cache.csv")
-
+# --- 6. CALCULATIONS ---
 if all_t:
-    df_trades = pd.concat(all_t, ignore_index=True, sort=False)
-    df_perf = pd.concat(all_p, ignore_index=True, sort=False) if all_p else pd.DataFrame()
+    trades_df = pd.concat(all_t, ignore_index=True, sort=False)
+    perf_df = pd.concat(all_p, ignore_index=True, sort=False) if all_p else pd.DataFrame()
+
+    # Column Mapping
+    c_q = fuzzy_find(trades_df, ['Qty', 'Quantity'])
+    c_p = fuzzy_find(trades_df, ['Price', 'T. Price'])
+    c_s = fuzzy_find(trades_df, ['Symbol', 'Ticker'])
+    c_d = fuzzy_find(trades_df, ['Date'])
+    c_c = fuzzy_find(trades_df, ['Comm'])
+
+    trades_df['Q_v'] = trades_df[c_q].apply(clean_numeric)
+    trades_df['P_v'] = trades_df[c_p].apply(clean_numeric)
+    trades_df['C_v'] = trades_df[c_c].apply(clean_numeric).abs() if c_c else 0.0
+    trades_df['DT_v'] = pd.to_datetime(trades_df[c_d].str.split(',').str[0], errors='coerce')
 
     # FIFO Engine
-    c_q = fuzzy_find(df_trades, ['Qty', 'Quantity'])
-    c_p = fuzzy_find(df_trades, ['Price', 'T. Price'])
-    c_s = fuzzy_find(df_trades, ['Symbol', 'Ticker'])
-    c_d = fuzzy_find(df_trades, ['Date'])
-    c_c = fuzzy_find(df_trades, ['Comm'])
-
-    df_trades['Q_v'] = df_trades[c_q].apply(clean_numeric)
-    df_trades['P_v'] = df_trades[c_p].apply(clean_numeric)
-    df_trades['C_v'] = df_trades[c_c].apply(clean_numeric).abs() if c_c else 0.0
-    df_trades['DT_v'] = pd.to_datetime(df_trades[c_d].str.split(',').str[0], errors='coerce')
-
     open_lots = []
-    for ticker in df_trades[c_s].unique():
-        sym_df = df_trades[df_trades[c_s] == ticker].sort_values('DT_v')
+    for ticker in trades_df[c_s].unique():
+        sym_df = trades_df[trades_df[c_s] == ticker].sort_values('DT_v')
         lots = []
         for _, row in sym_df.iterrows():
             if row['Q_v'] > 0:
@@ -139,19 +144,22 @@ if all_t:
                     else: lots[0]['q'] -= sq; sq = 0
         for l in lots:
             l['Symbol'] = ticker
-            l['Status'] = "Long-Term" if (pd.Timestamp.now() - l['dt']).days > 365 else "Short-Term"
+            l['Age'] = (pd.Timestamp.now() - l['dt']).days
+            l['Status'] = "Long-Term" if l['Age'] > 365 else "Short-Term"
             open_lots.append(l)
     
     df_h = pd.DataFrame(open_lots)
 
-    # --- TOP LINE KPIs ---
-    
-    
+    # Lifetime Metrics
     total_inv = (df_h['q'] * df_h['p']).sum() + df_h['c'].sum() if not df_h.empty else 0.0
     
-    cat_c, rt_c = fuzzy_find(df_perf, ['Category']), fuzzy_find(df_perf, ['Realized Total', 'Realized P/L'])
-    lt_s = df_perf[df_perf[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum() if not df_perf.empty and cat_c and rt_c else 0.0
-    lt_f = df_perf[df_perf[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum() if not df_perf.empty and cat_c and rt_c else 0.0
+    lt_s = lt_f = 0.0
+    if not perf_df.empty:
+        cat_c = fuzzy_find(perf_df, ['Category'])
+        rt_c = fuzzy_find(perf_df, ['Realized Total', 'Realized P/L'])
+        if cat_c and rt_c:
+            lt_s = perf_df[perf_df[cat_c].str.contains('Stock', na=False, case=False)][rt_c].apply(clean_numeric).sum()
+            lt_f = perf_df[perf_df[cat_c].str.contains('Forex|Cash', na=False, case=False)][rt_c].apply(clean_numeric).sum()
 
     st.subheader("🌐 Lifetime Overview")
     k1, k2, k3 = st.columns(3)
@@ -161,18 +169,25 @@ if all_t:
     st.caption("ℹ️ *Disclaimer: Total Realized P/L is net of commissions.*")
 
     # --- TABLES ---
+    
+
     def render_table(data, title):
         st.subheader(f"{title} (as of {curr_date})")
         if data.empty: return st.info("No active holdings.")
+        
         agg = data.groupby('Symbol').agg({'q': 'sum', 'p': 'mean', 'c': 'sum'}).reset_index()
+        
+        # Merge with Prices
         if prices_df is not None:
             agg = agg.merge(prices_df[['Symbol', 'StaticPrice']], on='Symbol', how='left').fillna(0)
         else:
             agg['StaticPrice'] = 0.0
+        
         agg['Total Basis'] = (agg['q'] * agg['p']) + agg['c']
         agg['Value'] = agg['q'] * agg['StaticPrice']
         agg['P/L $'] = agg['Value'] - agg['Total Basis']
         agg['P/L %'] = (agg['P/L $'] / agg['Total Basis'] * 100) if not agg.empty else 0.0
+        
         agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Comms', 'Live Price', 'Total Basis', 'Market Value', 'P/L $', 'P/L %']
         st.dataframe(agg.style.format({"Units": "{:.2f}", "Avg Cost": "${:.2f}", "Comms": "${:.2f}", "Live Price": "${:.2f}", "Total Basis": "${:.2f}", "Market Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"}), use_container_width=True)
 
@@ -182,4 +197,4 @@ if all_t:
     with c1: render_table(df_h[df_h['Status'] == "Short-Term"], "2. Short-Term Holdings")
     with c2: render_table(df_h[df_h['Status'] == "Long-Term"], "3. Long-Term Holdings")
 else:
-    st.info("👋 No data found. Please sync your Financial Years in the sidebar (start with FY24).")
+    st.info("No data found. Please run the sync in the sidebar for each year.")
