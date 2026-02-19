@@ -15,10 +15,8 @@ def safe_num(val):
     s = str(val).strip().replace('$', '').replace(',', '')
     if '(' in s and ')' in s: 
         s = '-' + s.replace('(', '').replace(')', '')
-    try: 
-        return float(s)
-    except: 
-        return 0.0
+    try: return float(s)
+    except: return 0.0
 
 def safe_find(df, keywords):
     """Finds a column name regardless of extra spaces or case."""
@@ -58,8 +56,7 @@ for t in tabs:
             fy_map[t] = parsed
             if "Trades" in parsed: all_trades.append(parsed["Trades"])
             if "Corporate Actions" in parsed: corporate_actions.append(parsed["Corporate Actions"])
-    except Exception as e:
-        st.sidebar.error(f"Error loading {t}: {e}")
+    except: continue
 
 # --- 3. FIFO ENGINE ---
 df_lots = pd.DataFrame()
@@ -68,7 +65,6 @@ if all_trades:
         trades = pd.concat(all_trades, ignore_index=True)
         trades.columns = trades.columns.str.strip()
         
-        # Discover Columns Safely
         q_c = safe_find(trades, ['Qty', 'Quantity'])
         p_c = safe_find(trades, ['Price', 'T. Price'])
         c_c = safe_find(trades, ['Comm', 'Commission'])
@@ -79,19 +75,6 @@ if all_trades:
         trades['cmm_v'] = trades[c_c].apply(safe_num).abs()
         trades['dt_v'] = pd.to_datetime(trades[d_c].str.split(',').str[0], errors='coerce')
         trades = trades.dropna(subset=['dt_v']).sort_values('dt_v')
-
-        # Robust Corporate Action Logic
-        if corporate_actions:
-            ca_df = pd.concat(corporate_actions, ignore_index=True)
-            for _, split in ca_df[ca_df['Description'].str.contains('Split', case=False, na=False)].iterrows():
-                try:
-                    parts = split['Description'].split()
-                    ratio = float(parts[0]) / float(parts[2])
-                    split_dt = pd.to_datetime(split['Date/Time'].split(',')[0])
-                    mask = (trades['Symbol'] == split['Symbol']) & (trades['dt_v'] < split_dt)
-                    trades.loc[mask, 'qty_v'] *= ratio
-                    trades.loc[mask, 'prc_v'] /= ratio
-                except: continue
 
         # Fallback for Splits
         for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
@@ -106,94 +89,4 @@ if all_trades:
             sym_trades = trades[trades['Symbol'] == sym]
             for _, row in sym_trades.iterrows():
                 if row['qty_v'] > 0: 
-                    lots.append({'date': row['dt_v'], 'qty': row['qty_v'], 'price': row['prc_v'], 'comm': row['cmm_v']})
-                elif row['qty_v'] < 0:
-                    sq = abs(row['qty_v'])
-                    while sq > 0 and lots:
-                        if lots[0]['qty'] <= sq:
-                            sq -= lots[0].pop('qty')
-                            lots.pop(0)
-                        else:
-                            lots[0]['qty'] -= sq
-                            sq = 0
-            for l in lots:
-                l['Symbol'] = sym
-                l['Type'] = "Long-Term" if (pd.Timestamp.now() - l['date']).days > 365 else "Short-Term"
-                holdings.append(l)
-        df_lots = pd.DataFrame(holdings)
-    except Exception as e:
-        st.sidebar.error(f"FIFO Engine Error: {e}")
-
-# --- 4. DASHBOARD ---
-st.title("🏦 Wealth Terminal Pro")
-
-if not fy_map:
-    st.error("No data found. Check your GSheet connection.")
-else:
-    sel_fy = st.selectbox("Financial Year", tabs, index=len(tabs)-1)
-    data_fy = fy_map.get(sel_fy, {})
-
-    # Top Metrics
-    stocks_pl, forex_pl = 0.0, 0.0
-    perf_s = 'Realized & Unrealized Performance Summary'
-    if perf_s in data_fy:
-        pdf = data_fy[perf_s]
-        rt_c = safe_find(pdf, ['Realized Total'])
-        ct_c = safe_find(pdf, ['Asset Category'])
-        if rt_c and ct_c:
-            pdf = pdf[~pdf['Symbol'].str.contains('Total|Asset', case=False, na=False)]
-            stocks_pl = pdf[pdf[ct_c].str.contains('Stock', case=False)][rt_c].apply(safe_num).sum()
-            forex_pl = pdf[pdf[ct_c].str.contains('Forex|Cash', case=False)][rt_c].apply(safe_num).sum()
-
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
-    m2.metric("Stocks Portion", f"${stocks_pl:,.2f}")
-    m3.metric("Forex/Cash Portion", f"${forex_pl:,.2f}")
-
-    # --- 5. HOLDINGS TABLES ---
-    st.divider()
-    if not df_lots.empty:
-        def render_table(subset, label):
-            st.subheader(label)
-            if subset.empty: return st.info(f"No {label} positions.")
-            agg = subset.groupby('Symbol').agg({'qty': 'sum', 'price': 'mean', 'comm': 'sum'}).reset_index()
-            agg['Basis'] = (agg['qty'] * agg['price']) + agg['comm']
-            agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Comms', 'Total Basis']
-            agg.index = range(1, len(agg) + 1) # Start at 1
-            st.dataframe(agg.style.format({
-                "Units": "{:.2f}", "Avg Cost": "${:.2f}", "Comms": "${:.2f}", "Total Basis": "${:.2f}"
-            }), use_container_width=True)
-
-        render_table(df_lots.copy(), "Current Holdings")
-        
-        # --- 6. CALCULATOR ---
-        st.divider()
-        st.header("🧮 FIFO Selling Calculator")
-        ca, cb = st.columns([1, 2])
-        s_pick = ca.selectbox("Ticker", sorted(df_lots['Symbol'].unique()))
-        s_lots = df_lots[df_lots['Symbol'] == s_pick].sort_values('date')
-        tot_q = s_lots['qty'].sum()
-        
-        mode = ca.radio("Amount Mode", ["Units", "Percentage"])
-        q_sell = cb.slider("Amount to Sell", 0.0, float(tot_q), float(tot_q*0.25)) if mode == "Units" else tot_q * (cb.slider("% to Sell", 0, 100, 25) / 100)
-        t_prof = cb.number_input("Target Profit %", value=105.0)
-        
-        if q_sell > 0:
-            curr_q, curr_c = q_sell, 0
-            for _, lot in s_lots.iterrows():
-                if curr_q <= 0: break
-                take = min(lot['qty'], curr_q)
-                curr_c += take * lot['price']
-                curr_q -= take
-            target_price = (curr_c * (1 + t_prof/100)) / q_sell
-            st.success(f"To hit {t_prof}% profit: Sell **{q_sell:.4f} units** at **${target_price:.2f}**")
-            
-            rem_q = tot_q - q_sell
-            if rem_q > 0:
-                st.write("#### 💎 Residual Portfolio Status")
-                rem_cost = (s_lots['qty'] * s_lots['price']).sum() - curr_c
-                r1, r2 = st.columns(2)
-                r1.metric("Units Left", f"{rem_q:.2f}")
-                r2.metric("New Avg Cost", f"${(rem_cost/rem_q):,.2f}")
-    else:
-        st.info("Holdings could not be calculated. Check your 'Trades' tab.")
+                    lots.append({'date': row['dt_v'], 'qty': row['qty_v'], 'price':
