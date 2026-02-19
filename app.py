@@ -12,7 +12,6 @@ st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="�
 try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     GITHUB_REPO = st.secrets["GITHUB_REPO"]
-    FILE_PATH = "data/master_portfolio.csv"
 except Exception:
     st.error("Secrets Error: Ensure GITHUB_TOKEN and GITHUB_REPO are in your Streamlit Secrets.")
     st.stop()
@@ -30,193 +29,187 @@ def fuzzy_find(df, keywords):
         if any(k.lower() in str(col).lower() for k in keywords): return col
     return None
 
+def get_ibkr_section(df, section_name):
+    rows = df[df.iloc[:, 0].str.contains(section_name, na=False, case=False)]
+    h_row = rows[rows.iloc[:, 1] == 'Header']
+    d_rows = rows[rows.iloc[:, 1] == 'Data']
+    if not h_row.empty and not d_rows.empty:
+        cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
+        data = d_rows.iloc[:, 2:2+len(cols)]
+        data.columns = cols
+        return data
+    return pd.DataFrame()
+
 @st.cache_data(ttl=3600)
 def get_live_price(ticker):
-    """Scrapes Google Finance for the current stock price."""
     try:
         url = f"https://www.google.com/search?q={ticker}+stock+price"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Common Google Finance price spans
         price_tag = soup.find('span', {'class': 'I67upf'}) or soup.find('span', {'jsname': 'vW79of'})
         return clean_numeric(price_tag.text) if price_tag else 0.0
     except: return 0.0
 
-# --- 3. STAGE 1: HARMONIZER & GITHUB ENGINE ---
-def push_to_github(df):
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
+# --- 3. GITHUB PERSISTENCE ENGINE ---
+def push_to_github(df, fy, filename):
+    path = f"data/{fy}/{filename}.csv"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    
     res = requests.get(url, headers=headers)
     sha = res.json().get('sha') if res.status_code == 200 else None
+    content = base64.b64encode(df.to_csv(index=False).encode()).decode()
     
-    encoded = base64.b64encode(df.to_csv(index=False).encode()).decode()
     payload = {
-        "message": f"Sync Portfolio: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "content": encoded, "branch": "main"
+        "message": f"Sync {fy} {filename}: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "content": content, "branch": "main"
     }
     if sha: payload["sha"] = sha
     return requests.put(url, headers=headers, json=payload).status_code in [200, 201]
 
-# --- 4. APP LOGIC ---
+def load_from_github(fy, filename):
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/data/{fy}/{filename}.csv?v={datetime.now().timestamp()}"
+    try:
+        return pd.read_csv(url)
+    except:
+        return None
+
+# --- 4. SIDEBAR: SELECTIVE SYNC ---
 st.title("🏦 Wealth Terminal Pro")
 curr_date = datetime.now().strftime('%d %b %Y')
 
-# Load Persistent Data
-if 'master_data' not in st.session_state:
-    raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{FILE_PATH}?v={datetime.now().timestamp()}"
-    try:
-        st.session_state['master_data'] = pd.read_csv(raw_url)
-    except:
-        st.session_state['master_data'] = None
-
-# Sidebar Sync Trigger
 with st.sidebar:
-    st.header("🔄 Data Pipeline")
-    if st.button("🚀 Sync GSheets ➔ GitHub Master"):
-        with st.status("Harmonizing Data...", expanded=True) as status:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            trades_list = []
-            for t in ["FY24", "FY25", "FY26"]:
-                try:
-                    raw = conn.read(worksheet=t, ttl=0)
-                    rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False, case=False)]
-                    h_row = rows[rows.iloc[:, 1] == 'Header']
-                    d_rows = rows[rows.iloc[:, 1] == 'Data']
-                    if not h_row.empty:
-                        cols = [c for c in h_row.iloc[0, 2:].tolist() if c]
-                        data = d_rows.iloc[:, 2:2+len(cols)]
-                        data.columns = cols
-                        data['FY_Source'] = t
-                        trades_list.append(data)
-                except: continue
-            
-            if trades_list:
-                master = pd.concat(trades_list).reset_index(drop=True)
-                # Apply numeric cleaning immediately
-                c_qty = fuzzy_find(master, ['Quantity', 'Qty'])
-                c_prc = fuzzy_find(master, ['T. Price', 'Price'])
-                c_dt = fuzzy_find(master, ['Date'])
-                
-                master['Qty_v'] = master[c_qty].apply(clean_numeric)
-                master['Prc_v'] = master[c_prc].apply(clean_numeric)
-                master['Date_v'] = pd.to_datetime(master[c_dt].str.split(',').str[0], errors='coerce').dt.strftime('%Y-%m-%d')
-                
-                # Push to GitHub
-                if push_to_github(master):
-                    status.update(label="GitHub Updated!", state="complete")
-                    st.session_state['master_data'] = master
-                    st.rerun()
-            else:
-                st.error("No trades found in Sheets.")
-
-# --- 5. DASHBOARD RENDERING ---
-if st.session_state.get('master_data') is not None:
-    df = st.session_state['master_data']
+    st.header("🔄 On-Demand Sync")
+    sync_fy = st.selectbox("Select Year to Sync", ["FY24", "FY25", "FY26"])
     
-    # Fuzzy Map for Calculations
-    c_cat = fuzzy_find(df, ['Category', 'Asset Class'])
-    c_pl = fuzzy_find(df, ['Realized P/L', 'Realized Total'])
-    c_cm = fuzzy_find(df, ['Comm'])
-    c_sym = fuzzy_find(df, ['Symbol', 'Ticker'])
+    if st.button(f"🚀 Sync {sync_fy} GSheets ➔ GitHub"):
+        with st.status(f"Processing {sync_fy}...", expanded=True) as status:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            raw = conn.read(worksheet=sync_fy, ttl=0)
+            
+            # Extract and Clean Sections
+            t_df = get_ibkr_section(raw, 'Trades')
+            p_df = get_ibkr_section(raw, 'Realized & Unrealized Performance Summary')
+            f_df = get_ibkr_section(raw, 'Cash Report')
+            
+            # Push to GitHub
+            success = True
+            if not t_df.empty: success &= push_to_github(t_df, sync_fy, "trades")
+            if not p_df.empty: success &= push_to_github(p_df, sync_fy, "perf")
+            if not f_df.empty: success &= push_to_github(f_df, sync_fy, "forex")
+            
+            if success:
+                st.session_state[f'last_sync_{sync_fy}'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                status.update(label=f"{sync_fy} Synced Successfully!", state="complete")
+                st.rerun()
+            else:
+                st.error("Sync failed. Check GitHub settings.")
 
-    # Cleaned series for math
-    df['PL_v'] = df[c_pl].apply(clean_numeric) if c_pl else 0.0
-    df['CM_v'] = df[c_cm].apply(clean_numeric).abs() if c_cm else 0.0
-    df['Date_v'] = pd.to_datetime(df['Date_v'])
+    if f'last_sync_{sync_fy}' in st.session_state:
+        st.caption(f"📅 **Last Sync:** {st.session_state[f'last_sync_{sync_fy}']}")
 
-    # FIFO Engine: Current Holdings Logic
+# --- 5. DASHBOARD: VIEWER ---
+st.divider()
+view_fy = st.radio("Select Financial Year to View", ["FY24", "FY25", "FY26"], horizontal=True)
+
+# Load data for selected FY
+t_df = load_from_github(view_fy, "trades")
+p_df = load_from_github(view_fy, "perf")
+f_df = load_from_github(view_fy, "forex")
+
+if t_df is not None:
+    # --- DATA HARMONIZATION ---
+    c_qty = fuzzy_find(t_df, ['Quantity', 'Qty'])
+    c_prc = fuzzy_find(t_df, ['Price', 'T. Price'])
+    c_dt  = fuzzy_find(t_df, ['Date'])
+    c_sym = fuzzy_find(t_df, ['Symbol'])
+    c_cm  = fuzzy_find(t_df, ['Comm'])
+
+    t_df['Qty_v'] = t_df[c_qty].apply(clean_numeric)
+    t_df['Prc_v'] = t_df[c_prc].apply(clean_numeric)
+    t_df['Comm_v'] = t_df[c_cm].apply(clean_numeric).abs() if c_cm else 0.0
+    t_df['DT_v'] = pd.to_datetime(t_df[c_dt].str.split(',').str[0], errors='coerce')
+
+    # FIFO Engine
     all_open_lots = []
-    for sym in df[c_sym].unique():
-        sym_df = df[df[c_sym] == sym].sort_values('Date_v')
+    for sym in t_df[c_sym].unique():
+        sym_df = t_df[t_df[c_sym] == sym].sort_values('DT_v')
         lots = []
         for _, row in sym_df.iterrows():
-            if row['Qty_v'] > 0: # Buy
-                lots.append({'dt': row['Date_v'], 'q': row['Qty_v'], 'p': row['Prc_v'], 'c': row['CM_v']})
-            elif row['Qty_v'] < 0: # Sell
-                sell_q = abs(row['Qty_v'])
-                while sell_q > 0 and lots:
-                    if lots[0]['q'] <= sell_q:
-                        sell_q -= lots[0]['q']
-                        lots.pop(0)
-                    else:
-                        lots[0]['q'] -= sell_q
-                        sell_q = 0
+            if row['Qty_v'] > 0:
+                lots.append({'dt': row['DT_v'], 'q': row['Qty_v'], 'p': row['Prc_v'], 'c': row['Comm_v']})
+            elif row['Qty_v'] < 0:
+                sq = abs(row['Qty_v'])
+                while sq > 0 and lots:
+                    if lots[0]['q'] <= sq: sq -= lots.pop(0)['q']
+                    else: lots[0]['q'] -= sq; sq = 0
         for l in lots:
             l['Symbol'] = sym
-            l['Age'] = (pd.Timestamp.now() - l['dt']).days
-            l['Class'] = "Long-Term" if l['Age'] > 365 else "Short-Term"
+            l['Days'] = (pd.Timestamp.now() - l['dt']).days
+            l['Type'] = "Long-Term" if l['Days'] > 365 else "Short-Term"
             all_open_lots.append(l)
 
     df_h = pd.DataFrame(all_open_lots)
 
     # --- TOP LINE KPIs ---
-    st.header("📈 Portfolio Performance")
-    fy_list = sorted(df['FY_Source'].unique())
-    sel_fy = st.selectbox("Financial Year View", fy_list, index=len(fy_list)-1)
     
-    fy_df = df[df['FY_Source'] == sel_fy]
-    s_pl = fy_df[fy_df[c_cat].str.contains('Stock', na=False, case=False)]['PL_v'].sum() if c_cat else 0.0
-    f_pl = fy_df[fy_df[c_cat].str.contains('Forex|Cash', na=False, case=False)]['PL_v'].sum() if c_cat else 0.0
     
-    # Total Investment = Basis of current lots
-    total_inv = (df_h['q'] * df_h['p']).sum() + df_h['c'].sum()
+    # Realized P/L from Performance file
+    stocks_pl, forex_pl = 0.0, 0.0
+    if p_df is not None:
+        cat_col = fuzzy_find(p_df, ['Asset Category', 'Category'])
+        rt_col = fuzzy_find(p_df, ['Realized Total', 'Realized P/L'])
+        if cat_col and rt_col:
+            stocks_pl = p_df[p_df[cat_col].str.contains('Stock', na=False, case=False)][rt_col].apply(clean_numeric).sum()
+            forex_pl = p_df[p_df[cat_col].str.contains('Forex|Cash', na=False, case=False)][rt_col].apply(clean_numeric).sum()
+
+    total_inv = (df_h['q'] * df_h['p']).sum() + df_h['c'].sum() if not df_h.empty else 0.0
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Investment", f"${total_inv:,.2f}")
-    m2.metric("Net Realized P/L", f"${(s_pl + f_pl):,.2f}")
-    m3.metric("Stocks Realized", f"${s_pl:,.2f}")
-    m4.metric("Forex/Impact", f"${f_pl:,.2f}")
+    m2.metric("Net Realized P/L", f"${(stocks_pl + forex_pl):,.2f}")
+    m3.metric("Stocks Realized", f"${stocks_pl:,.2f}")
+    m4.metric("Forex/Impact", f"${forex_pl:,.2f}")
     st.caption("ℹ️ *Disclaimer: Total Realized P/L is net of commissions.*")
 
-    # --- HOLDINGS TABLES ---
-    
-    
-    def render_table(data, title):
+    # --- TABLES ---
+    def render_h_table(data, title):
         st.subheader(f"{title} (as of {curr_date})")
-        if data.empty: return st.info("No holdings in this category.")
-        
+        if data.empty: return st.info("No holdings.")
         agg = data.groupby('Symbol').agg({'q': 'sum', 'p': 'mean', 'c': 'sum'}).reset_index()
         agg['Live Price'] = agg['Symbol'].apply(get_live_price)
         agg['Total Basis'] = (agg['q'] * agg['p']) + agg['c']
         agg['Market Value'] = agg['q'] * agg['Live Price']
         agg['P/L $'] = agg['Market Value'] - agg['Total Basis']
         agg['P/L %'] = (agg['P/L $'] / agg['Total Basis']) * 100
-        
         st.dataframe(agg.style.format({
             "q": "{:.2f}", "p": "${:.2f}", "c": "${:.2f}", "Live Price": "${:.2f}",
             "Total Basis": "${:.2f}", "Market Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
         }), use_container_width=True)
 
     st.divider()
-    render_table(df_h, "1. Current Global Holdings")
+    render_h_table(df_h, "1. Current Global Holdings")
     
-    col_a, col_b = st.columns(2)
-    with col_a: render_table(df_h[df_h['Class'] == "Short-Term"], "2. Short-Term Holdings")
-    with col_b: render_table(df_h[df_h['Class'] == "Long-Term"], "3. Long-Term Holdings")
+    ca, cb = st.columns(2)
+    with ca: render_h_table(df_h[df_h['Type'] == "Short-Term"], "2. Short-Term Holdings")
+    with cb: render_h_table(df_h[df_h['Type'] == "Long-Term"], "3. Long-Term Holdings")
 
-    # --- FIFO CALCULATOR ---
+    # --- CALCULATOR ---
     
     st.divider()
     st.header("🧮 FIFO Selling Calculator")
     c1, c2 = st.columns([1, 2])
+    pick = c1.selectbox("Select Ticker", df_h['Symbol'].unique())
+    h_row = df_h[df_h['Symbol'] == pick]
+    t_units = h_row['q'].sum()
+    a_cost = h_row['p'].mean()
     
-    s_ticker = c1.selectbox("Ticker to Simulate", df_h['Symbol'].unique())
-    total_units = df_h[df_h['Symbol'] == s_ticker]['q'].sum()
-    avg_cost = df_h[df_h['Symbol'] == s_ticker]['p'].mean()
+    mode = c1.radio("Mode", ["Units", "Percentage"])
+    s_qty = c2.slider("Quantity", 0.0, float(t_units), float(t_units*0.25)) if mode == "Units" else t_units * (c2.slider("%", 0, 100, 25)/100)
+    t_prof = c2.number_input("Target Profit %", value=110.0)
     
-    mode = c1.radio("Input Mode", ["Units", "Percentage"])
-    if mode == "Units":
-        sell_amt = c2.slider("Units to Sell", 0.0, float(total_units), float(total_units * 0.25))
-    else:
-        pct = c2.slider("Percentage to Sell", 0, 100, 25)
-        sell_amt = total_units * (pct / 100)
-    
-    target_pct = c2.number_input("Target Profit %", value=110.0)
-    target_price = avg_cost * (target_pct / 100)
-    
-    st.success(f"To hit {target_pct}% Profit: Sell **{sell_amt:.2f} units** at **${target_price:,.2f}**")
-    st.info(f"Residual: {total_units - sell_amt:.2f} units remaining at ${avg_cost:,.2f} cost basis.")
+    st.success(f"Sell at **${(a_cost * (t_prof/100)):,.2f}** | Residual: {t_units - s_qty:.2f} units")
 
 else:
-    st.info("👋 Welcome! Please click 'Sync GSheets ➔ GitHub Master' in the sidebar to load your data.")
+    st.info(f"No GitHub data for {view_fy}. Please select it in the sidebar and click Sync.")
