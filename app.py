@@ -6,7 +6,7 @@ from datetime import datetime
 # --- CONFIG ---
 st.set_page_config(page_title="Wealth Terminal Pro", layout="wide", page_icon="🏦")
 
-# --- 1. CONNECTION & UTILS ---
+# --- 1. CONNECTION & ROBUST UTILS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def safe_num(val):
@@ -37,7 +37,7 @@ def parse_ibkr_grid(df):
             sections[name] = data
     return sections
 
-# --- 2. DATA LOADING ---
+# --- 2. DATA INGESTION ---
 tabs = ["FY24", "FY25", "FY26"]
 fy_map = {}
 all_trades = []
@@ -58,6 +58,7 @@ if all_trades:
         trades = pd.concat(all_trades, ignore_index=True)
         trades.columns = trades.columns.str.strip()
         q_c, p_c, c_c, d_c = safe_find(trades, ['Qty']), safe_find(trades, ['Price']), safe_find(trades, ['Comm']), safe_find(trades, ['Date'])
+        
         trades['qty_v'] = trades[q_c].apply(safe_num)
         trades['prc_v'] = trades[p_c].apply(safe_num)
         trades['cmm_v'] = trades[c_c].apply(safe_num).abs()
@@ -68,13 +69,13 @@ if all_trades:
         for tkr, dt in [('NVDA', '2024-06-10'), ('SMCI', '2024-10-01')]:
             mask = (trades['Symbol'] == tkr) & (trades['dt_v'] < pd.to_datetime(dt))
             if not trades[mask].empty:
-                trades.loc[mask, 'qty_v'] *= 10
-                trades.loc[mask, 'prc_v'] /= 10
+                trades.loc[mask, 'qty_v'] *= 10; trades.loc[mask, 'prc_v'] /= 10
 
         holdings = []
         for sym in trades['Symbol'].unique():
             lots = []
-            for _, row in trades[trades['Symbol'] == sym].iterrows():
+            sym_trades = trades[trades['Symbol'] == sym]
+            for _, row in sym_trades.iterrows():
                 if row['qty_v'] > 0: 
                     lots.append({'date': row['dt_v'], 'qty': row['qty_v'], 'price': row['prc_v'], 'comm': row['cmm_v']})
                 elif row['qty_v'] < 0:
@@ -89,25 +90,16 @@ if all_trades:
         df_lots = pd.DataFrame(holdings)
     except: pass
 
-# --- 4. DASHBOARD & LIVE PRICE INPUT ---
+# --- 4. RENDER DASHBOARD ---
 st.title("🏦 Wealth Terminal Pro")
 curr_date = datetime.now().strftime('%d %b %Y')
 
-# Side Panel for Price Updates
-live_prices = {}
-if not df_lots.empty:
-    with st.sidebar:
-        st.header("⚡ Live Price Update")
-        st.caption("Enter current prices to update P/L")
-        for ticker in sorted(df_lots['Symbol'].unique()):
-            # Use the average cost as a default starting point for the input
-            default_p = df_lots[df_lots['Symbol'] == ticker]['price'].mean()
-            live_prices[ticker] = st.number_input(f"Price: {ticker}", value=float(default_p), step=0.01)
-
-# Top Metrics
-if fy_map:
+if not fy_map:
+    st.error("GSheet Connection Failed. Check your secrets.")
+else:
     sel_fy = st.selectbox("Financial Year View", tabs, index=len(tabs)-1)
     data_fy = fy_map.get(sel_fy, {})
+    
     stocks_pl, forex_pl = 0.0, 0.0
     perf_s = 'Realized & Unrealized Performance Summary'
     if perf_s in data_fy:
@@ -128,26 +120,44 @@ st.divider()
 
 def render_table(subset, label):
     st.subheader(f"{label} (as of {curr_date})")
-    if subset.empty: return st.info(f"No {label} positions.")
+    if subset.empty: 
+        st.info(f"No {label} positions identified.")
+        return
     
     agg = subset.groupby('Symbol').agg({'qty': 'sum', 'price': 'mean', 'comm': 'sum'}).reset_index()
-    agg['Current Price'] = agg['Symbol'].map(live_prices).fillna(0.0)
-    
-    # P/L Calculations
     agg['Total Basis'] = (agg['qty'] * agg['price']) + agg['comm']
-    agg['Market Value'] = agg['qty'] * agg['Current Price']
-    agg['P/L $'] = agg['Market Value'] - agg['Total Basis']
-    agg['P/L %'] = (agg['P/L $'] / agg['Total Basis']) * 100
     
-    agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Comms', 'Current Price', 'Total Basis', 'Market Value', 'P/L $', 'P/L %']
+    # Simple formatting without requiring external price inputs unless you want them
+    agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Comms', 'Total Basis']
     agg.index = range(1, len(agg) + 1)
     
     st.dataframe(agg.style.format({
-        "Units": "{:.2f}", "Avg Cost": "${:.2f}", "Comms": "${:.2f}", "Current Price": "${:.2f}",
-        "Total Basis": "${:.2f}", "Market Value": "${:.2f}", "P/L $": "${:.2f}", "P/L %": "{:.2f}%"
-    }).map(lambda x: 'color: green' if x > 0 else 'color: red', subset=['P/L $', 'P/L %']), use_container_width=True)
+        "Units": "{:.2f}", "Avg Cost": "${:.2f}", "Comms": "${:.2f}", "Total Basis": "${:.2f}"
+    }), use_container_width=True)
 
 if not df_lots.empty:
     render_table(df_lots.copy(), "1. Current Global Holdings")
     render_table(df_lots[df_lots['Type'] == "Short-Term"].copy(), "2. Short-Term Holdings")
     render_table(df_lots[df_lots['Type'] == "Long-Term"].copy(), "3. Long-Term Holdings")
+
+    # --- 6. CALCULATOR ---
+    st.divider()
+    st.header("🧮 FIFO Selling Calculator")
+    ca, cb = st.columns([1, 2])
+    s_pick = ca.selectbox("Analyze Ticker", sorted(df_lots['Symbol'].unique()))
+    s_lots = df_lots[df_lots['Symbol'] == s_pick].sort_values('date')
+    tot_q = s_lots['qty'].sum()
+    
+    mode = ca.radio("Amount Mode", ["Units", "Percentage"])
+    q_sell = cb.slider("Amount to Sell", 0.0, float(tot_q), float(tot_q*0.25)) if mode == "Units" else tot_q * (cb.slider("% to Sell", 0, 100, 25) / 100)
+    t_prof = cb.number_input("Target Profit %", value=105.0)
+    
+    if q_sell > 0:
+        curr_q, curr_c = q_sell, 0
+        for _, lot in s_lots.iterrows():
+            if curr_q <= 0: break
+            take = min(lot['qty'], curr_q)
+            curr_c += take * lot['price']
+            curr_q -= take
+        target_price = (curr_c * (1 + t_prof/100)) / q_sell
+        st.success(f"To hit {t_prof}% profit: Sell **{q_sell:.4f} units** at **${target_price:.2f}**")
