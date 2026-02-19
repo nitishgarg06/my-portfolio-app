@@ -93,4 +93,124 @@ class AnalyticsEngine:
                 l['Symbol'] = ticker
                 l['Status'] = "Long-Term" if (pd.Timestamp.now() - l['dt']).days > 365 else "Short-Term"
                 open_lots.append(l)
-        return pd.DataFrame(
+        return pd.DataFrame(open_lots)
+
+# --- 4. MAIN INTERFACE & DASHBOARD ---
+st.set_page_config(layout="wide", page_title="Wealth Terminal Pro")
+st.title("🏦 Wealth Terminal Pro")
+
+# SIDEBAR: DATA SYNC
+with st.sidebar:
+    st.header("🔄 Multi-File Sync")
+    sync_fy = st.selectbox("Sync Year", ["FY24", "FY25", "FY26"])
+    if st.button(f"🚀 Sync {sync_fy} & Prices"):
+        with st.status(f"Pushing {sync_fy} to GitHub...") as s:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            raw = conn.read(worksheet=sync_fy, ttl=0)
+            
+            # Save Trades
+            t_rows = raw[raw.iloc[:, 0].str.contains('Trades', na=False)]
+            th = t_rows[t_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
+            td = t_rows[t_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(th)]
+            td.columns = th
+            DataEngine.push_to_github(td, f"data/{sync_fy}/trades.csv")
+            
+            # Update Prices
+            PriceEngine.refresh_cache(td['Symbol'].unique().tolist())
+            
+            # Save Performance Summary
+            p_rows = raw[raw.iloc[:, 0].str.contains('Performance Summary|Realized', na=False)]
+            if not p_rows.empty:
+                ph = p_rows[p_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
+                pd_data = p_rows[p_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(ph)]
+                pd_data.columns = ph
+                DataEngine.push_to_github(pd_data, f"data/{sync_fy}/perf.csv")
+            
+            st.rerun()
+
+# DASHBOARD: CUMULATIVE VIEW
+view_fy = st.radio("Display Horizon", ["FY24", "FY25", "FY26"], index=2, horizontal=True)
+load_years = ["FY24", "FY25", "FY26"][:["FY24", "FY25", "FY26"].index(view_fy)+1]
+
+all_trades, all_perf = [], []
+for y in load_years:
+    t, p = DataEngine.load_from_github(f"data/{y}/trades.csv"), DataEngine.load_from_github(f"data/{y}/perf.csv")
+    if t is not None: all_trades.append(t)
+    if p is not None: all_perf.append(p)
+
+prices_cache = DataEngine.load_from_github("data/price_cache.csv")
+
+if all_trades:
+    # 1. Process FIFO & Lifetime Metrics
+    df_lots = AnalyticsEngine.run_fifo(pd.concat(all_trades))
+    df_p_all = pd.concat(all_perf) if all_perf else pd.DataFrame()
+
+    st.subheader("🌐 Lifetime Overview")
+    
+    # Calculate Realized
+    lt_s = lt_f = 0.0
+    if not df_p_all.empty:
+        rt_col = next((c for c in df_p_all.columns if 'Realized' in c and 'Total' in c), None)
+        cat_col = next((c for c in df_p_all.columns if 'Category' in c or 'Asset' in c), None)
+        if rt_col and cat_col:
+            df_p_all[rt_col] = pd.to_numeric(df_p_all[rt_col].astype(str).str.replace('$','').str.replace(',',''), errors='coerce').fillna(0)
+            lt_s = df_p_all[df_p_all[cat_col].str.contains('Stock|Equity', na=False, case=False)][rt_col].sum()
+            lt_f = df_p_all[df_p_all[cat_col].str.contains('Forex|Cash|Interest', na=False, case=False)][rt_col].sum()
+
+    total_inv = (df_lots['q'] * df_lots['p']).sum() + df_lots['c'].sum() if not df_lots.empty else 0.0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Lifetime Investment", f"${total_inv:,.2f}")
+    k2.metric("Total Realized P/L", f"${(lt_s + lt_f):,.2f}")
+    k3.metric("Stocks Portion", f"${lt_s:,.2f}")
+    k4.metric("Forex/Impact", f"${lt_f:,.2f}")
+    st.caption("ℹ️ *Realized P/L is net of commissions.*")
+
+    # 2. Render Holdings Tables
+    
+    
+    def display_holdings(data, title):
+        st.subheader(f"{title} (as of {datetime.now().strftime('%d %b %Y')})")
+        if data.empty: return st.info("No holdings in this category.")
+        
+        agg = data.groupby('Symbol').agg({'q':'sum', 'p':'mean', 'c':'sum'}).reset_index()
+        if prices_cache is not None:
+            agg = agg.merge(prices_cache[['Symbol', 'StaticPrice']], on='Symbol', how='left').fillna(0)
+        else: agg['StaticPrice'] = 0.0
+        
+        agg['Total Basis'] = (agg['q'] * agg['p']) + agg['c']
+        agg['Market Value'] = agg['q'] * agg['StaticPrice']
+        agg['P/L $'] = agg['Market Value'] - agg['Total Basis']
+        agg['P/L %'] = (agg['P/L $'] / agg['Total Basis'] * 100) if not agg.empty else 0.0
+        
+        agg.columns = ['Ticker', 'Units', 'Avg Cost', 'Comms', 'Static Price', 'Total Basis', 'Market Value', 'P/L $', 'P/L %']
+        agg.index = range(1, len(agg) + 1)
+        st.dataframe(agg.style.format({
+            "Units":"{:.2f}", "Avg Cost":"${:.2f}", "Comms":"${:.2f}", "Static Price":"${:.2f}",
+            "Total Basis":"${:.2f}", "Market Value":"${:.2f}", "P/L $":"${:.2f}", "P/L %":"{:.2f}%"
+        }), use_container_width=True)
+
+    st.divider()
+    display_holdings(df_lots, "1. Current Global Holdings")
+    c1, c2 = st.columns(2)
+    with c1: display_holdings(df_lots[df_lots['Status']=="Short-Term"], "2. Short-Term Holdings")
+    with c2: display_holdings(df_lots[df_lots['Status']=="Long-Term"], "3. Long-Term Holdings")
+
+    # 3. FIFO Calculator
+    
+    st.divider()
+    st.header("🧮 FIFO Selling Calculator")
+    sel_stock = st.selectbox("Select Ticker", df_lots['Symbol'].unique())
+    u_total = df_lots[df_lots['Symbol']==sel_stock]['q'].sum()
+    c_avg = df_lots[df_lots['Symbol']==sel_stock]['p'].mean()
+    
+    col_a, col_b = st.columns(2)
+    sell_amt = col_a.slider("Quantity to Sell", 0.0, float(u_total), float(u_total*0.25))
+    target_pct = col_b.number_input("Target Profit %", value=110.0)
+    
+    exit_p = c_avg * (target_pct/100)
+    st.success(f"To achieve {target_pct}% Profit, sell at **${exit_p:,.2f}**")
+    st.info(f"**Residual Holding:** {u_total - sell_amt:.2f} units of {sel_stock} remaining at ${c_avg:,.2f} cost basis.")
+
+else:
+    st.warning("⚠️ No data detected on GitHub. Use the sidebar to Sync your Financial Years.")
