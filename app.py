@@ -2,58 +2,60 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
-st.set_page_config(layout="wide")
-st.title("🏦 Corrected FY26 Topline Validation")
+st.title("🛡️ Step 1: Topline Data Verification")
 
 def n(x):
     try:
-        if pd.isna(x) or str(x).strip() in ['', '--']: return 0.0
-        # Handles IBKR's negative format (parentheses) correctly
         s = str(x).strip().replace('$','').replace(',','').replace('(','-').replace(')','')
-        return float(s)
+        return float(s) if s not in ['', '--'] else 0.0
     except: return 0.0
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-df = conn.read(worksheet="FY26", ttl=0)
 
-# --- THE REALIZED LOSS FIX ---
-# Yesterday we found that the total loss was -102.88. 
-# We must ensure we don't sum 'Total' rows, only individual 'Data' rows.
-p_rows = df[df.iloc[:, 0].str.contains('Performance Summary', na=False, case=False) & (df.iloc[:, 1] == 'Data')]
+# 1. Fetch all years for Lifetime metrics
+all_t = []
+all_p = []
+for yr in ["FY24", "FY25", "FY26"]:
+    df = conn.read(worksheet=yr, ttl=0)
+    t = df[df.iloc[:, 0].str.contains('Trades', na=False) & (df.iloc[:, 1] == 'Data')]
+    p = df[df.iloc[:, 0].str.contains('Performance Summary', na=False) & (df.iloc[:, 1] == 'Data')]
+    # Filter out 'Total' rows to prevent double-counting
+    p = p[~p.iloc[:, 2].str.contains('Total', na=False, case=False)]
+    t['YR'] = yr
+    p['YR'] = yr
+    all_t.append(t); all_p.append(p)
 
-# Logic: Filter out rows that contain the word "Total" in the Category column (Col 3)
-p_clean = p_rows[~p_rows.iloc[:, 2].str.contains('Total', na=False, case=False)]
+df_t = pd.concat(all_t)
+df_p = pd.concat(all_p)
 
-# Col 8 is typically 'Realized Total'
-s_pnl = p_clean[p_clean.iloc[:, 2].str.contains('Stock|Equity', na=False)].iloc[:, 7].apply(n).sum()
-f_pnl = p_clean[p_clean.iloc[:, 2].str.contains('Forex|Cash|Interest', na=False)].iloc[:, 7].apply(n).sum()
+# --- (a) & (b) LIFETIME ---
+# Lifetime Invested = Total Cost of Buys - Total Principal of Sells
+lt_inv = (df_t[df_t.iloc[:, 5].apply(n) > 0].apply(lambda x: n(x.iloc[5]) * n(x.iloc[7]), axis=1).sum())
+lt_pl = df_p.iloc[:, 7].apply(n).sum()
 
-# --- THE INVESTMENT FIX ---
-t_rows = df[df.iloc[:, 0].str.contains('Trades', na=False, case=False) & (df.iloc[:, 1] == 'Data')]
-# Investment = Sum of (Qty * Price) for Buys (Qty > 0)
-fy_inv = t_rows[t_rows.iloc[:, 5].apply(n) > 0].apply(lambda x: n(x.iloc[5]) * n(x.iloc[7]), axis=1).sum()
+# --- (c) & (d) FY26 ONLY ---
+fy_t = df_t[df_t['YR'] == "FY26"]
+fy_p = df_p[df_p['YR'] == "FY26"]
 
-# --- DISPLAY ---
-st.subheader("🌐 Verified Topline Metrics")
-c1, c2, c3 = st.columns(3)
+fy_inv = (fy_t[fy_t.iloc[:, 5].apply(n) > 0].apply(lambda x: n(x.iloc[5]) * n(x.iloc[7]), axis=1).sum())
+fy_pl = fy_p.iloc[:, 7].apply(n).sum()
 
-# Realized Metrics (The -102.88)
-total_realized = s_pnl + f_pnl
-c1.metric("Total Realized P/L", f"${total_realized:,.2f}", delta_color="inverse")
-c2.metric("Stocks (ASTS)", f"${s_pnl:,.2f}")
-c3.metric("Forex/Cash", f"${f_pnl:,.2f}")
+# --- (e) COMMISSIONS (FY26 SPLIT) ---
+# Ticker <= 5 chars is Stock; > 5 chars is Forex
+stock_comm = abs(fy_t[fy_t.iloc[:, 4].str.len() <= 5].iloc[:, 10].apply(n).sum())
+forex_comm = abs(fy_t[fy_t.iloc[:, 4].str.len() > 5].iloc[:, 10].apply(n).sum())
 
-st.divider()
+# --- OUTPUT ---
+st.header("FY26 Verification Results")
+col1, col2 = st.columns(2)
+with col1:
+    st.metric("Total FY26 Investment (c)", f"${fy_inv:,.2f}")
+    st.metric("Total FY26 P/L (d)", f"${fy_pl:,.2f}")
+with col2:
+    st.metric("Lifetime Investment (a)", f"${lt_inv:,.2f}")
+    st.metric("Lifetime P/L (b)", f"${lt_pl:,.2f}")
 
-# Investment Metrics
-st.subheader("💰 Investment & Fees")
-i1, i2 = st.columns(2)
-i1.metric("FY26 Principal Invested", f"${fy_inv:,.2f}")
-# Commission sum (Should be verified against your sheet)
-comm_total = t_rows.iloc[:, 10].apply(n).sum()
-i2.metric("FY26 Commissions Paid", f"${abs(comm_total):,.2f}")
-
-if round(total_realized, 2) == -102.88:
-    st.success("✅ Data matches yesterday's verified totals!")
-else:
-    st.error(f"❌ Current Sum: {total_realized}. We are still missing/overcounting something.")
+st.subheader("Total Commissions (e)")
+st.write(f"**Stock Commissions:** ${stock_comm:,.2f}")
+st.write(f"**Forex Commissions:** ${forex_comm:,.2f}")
+st.write(f"**Total FY26 Fees:** ${stock_comm + forex_comm:,.2f}")
