@@ -105,14 +105,25 @@ if not df_all.empty:
         else:
             st.info("No individual trade data (Column B='Data') found.")
 
-    # --- TAB 3: FIFO CALCULATOR (CHRONOLOGICAL METHOD A) ---
+    # --- TAB 3: FIFO CALCULATOR ---
     with tab_fifo:
         st.header("Interactive FIFO Sell Calculator")
-        # Identify stocks from Data rows
-        ticker_list = sorted(df_all[(df_all['A'] == "Trades") & (df_all['B'] == "Data")]['F'].unique())
+        
+        # IMPROVED FILTER: Case-insensitive and strips extra spaces
+        df_all['A_clean'] = df_all['A'].astype(str).str.strip().str.capitalize()
+        df_all['B_clean'] = df_all['B'].astype(str).str.strip().str.capitalize()
+        
+        # Now looking for "Trades" and "Data" regardless of how they were typed
+        data_rows = df_all[
+            (df_all['A_clean'] == "Trades") & 
+            (df_all['B_clean'] == "Data")
+        ]
+        
+        ticker_list = sorted(data_rows['F'].unique())
         
         if ticker_list:
             sel_t = st.selectbox("Select Stock", ticker_list)
+            # ... (rest of the FIFO code)
             
             # Reconstruct FIFO Queue from all historical trades
             s_df = df_all[(df_all['F'] == sel_t) & (df_all['A'] == "Trades") & (df_all['B'] == "Data")].copy()
@@ -159,3 +170,4 @@ if not df_all.empty:
             st.warning("No ticker data found. Ensure Column A='Trades' and Column B='Data'.")
 else:
     st.error("Connection failed. Check Google Sheet permissions and worksheet names (FY24, FY25, FY26).")
+
