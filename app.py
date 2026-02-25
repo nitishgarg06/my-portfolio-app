@@ -1,77 +1,117 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
-st.title("🛡️ Direct Data Verification (No-Guess Mode)")
+# --- SECTION 1: THE FORMULA ENGINE (SUMIFS) ---
+def get_metrics_from_logic(df):
+    """Replicates your specific SUMIFS logic for each sheet."""
+    def s_if(target, conds):
+        mask = pd.Series([True] * len(df))
+        for col, val in conds.items():
+            if col in df.columns:
+                mask &= (df[col] == val)
+        return df.loc[mask, target].sum() if target in df.columns else 0
 
-# 1. THE CLEANER
-def n(x):
-    try:
-        s = str(x).strip().replace('$','').replace(',','').replace('(','-').replace(')','')
-        return float(s) if s not in ['', '--', 'None'] else 0.0
-    except: return 0.0
+    return {
+        "inv_usd": s_if('M', {'A': 'Trades', 'B': 'Total', 'D': 'Stocks', 'E': 'USD'}),
+        "inv_aud": s_if('M', {'A': 'Trades', 'B': 'Total', 'D': 'Stocks', 'E': 'AUD'}),
+        "div_usd": s_if('F', {'A': 'Dividends', 'C': 'Total'}),
+        "div_aud": s_if('F', {'A': 'Dividends', 'C': 'Total in AUD'}),
+        "realized_stocks_total": (
+            s_if('F', {'A': 'Realized & Unrealized Performance Summary', 'C': 'Stocks'}) +
+            s_if('G', {'A': 'Realized & Unrealized Performance Summary', 'C': 'Stocks'}) +
+            s_if('H', {'A': 'Realized & Unrealized Performance Summary', 'C': 'Stocks'}) +
+            s_if('I', {'A': 'Realized & Unrealized Performance Summary', 'C': 'Stocks'})
+        ),
+        "deposits_aud": s_if('F', {'A': 'Deposits & Withdrawals', 'C': 'Total'})
+    }
 
-# 2. THE EXTRACTOR
-def get_clean_section(df, section_name):
-    # Find the section and the header row
-    section_rows = df[df.iloc[:, 0].str.contains(section_name, na=False, case=False)]
-    if section_rows.empty: return pd.DataFrame()
+# --- SECTION 2: THE FIFO ENGINE ---
+def run_fifo_engine(df, ticker, target_sell_amount, is_pct, target_profit_pct):
+    """Calculates Sell Value and Remaining Summary using FIFO logic."""
+    # Filter for granular trade data only (Method A)
+    trades = df[(df['A'] == 'Trades') & (df['B'] == 'Data') & (df['F'] == ticker)].copy()
     
-    # Get headers and data
-    headers = section_rows[section_rows.iloc[:, 1] == 'Header'].iloc[0, 2:].dropna().tolist()
-    data = section_rows[section_rows.iloc[:, 1] == 'Data'].iloc[:, 2:2+len(headers)]
-    data.columns = headers
-    return data
-
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-# 3. THE CALCULATION
-FY_TABS = ["FY24", "FY25", "FY26"]
-results = {"fy_inv": 0, "fy_pl": 0, "lt_inv": 0, "lt_pl": 0, "s_comm": 0, "f_comm": 0}
-
-for tab in FY_TABS:
-    df_raw = conn.read(worksheet=tab, ttl=0)
+    # Build Buy Queue
+    queue = []
+    for _, row in trades.iterrows():
+        qty, basis = float(row['K']), float(row['M'])
+        if qty > 0: queue.append({'qty': qty, 'basis': basis})
+        else:
+            sell_rem = abs(qty)
+            while sell_rem > 0 and queue:
+                if queue[0]['qty'] <= sell_rem: sell_rem -= queue.pop(0)['qty']
+                else:
+                    queue[0]['qty'] -= sell_rem
+                    sell_rem = 0
     
-    # Get Sections
-    trades = get_clean_section(df_raw, "Trades")
-    perf = get_clean_section(df_raw, "Performance Summary")
+    total_held = sum(item['qty'] for item in queue)
+    units_to_sell = (target_sell_amount / 100) * total_held if is_pct else target_sell_amount
     
-    # Standardize column search
-    q_col = next((c for c in trades.columns if 'Qty' in c), None)
-    p_col = next((c for c in trades.columns if 'Price' in c), None)
-    c_col = next((c for c in trades.columns if 'Comm' in c), None)
-    sym_col = next((c for c in trades.columns if 'Symbol' in c), None)
-    pl_col = next((c for c in perf.columns if 'Realized' in c and 'Total' in c), None)
-    cat_col = next((c for c in perf.columns if 'Category' in c), None)
+    # Calculate Cost of the slice to be sold
+    temp_units, cost_of_slice = units_to_sell, 0
+    for lot in queue:
+        if temp_units <= 0: break
+        take = min(lot['qty'], temp_units)
+        cost_of_slice += (take / lot['qty']) * lot['basis']
+        temp_units -= take
+        lot['qty'] -= take # Update for remaining summary
 
-    # LIFETIME ACCUMULATION
-    if q_col and p_col:
-        # Lifetime Investment: Only sum 'Buys' (Qty > 0)
-        results["lt_inv"] += trades[trades[q_col].apply(n) > 0].apply(lambda x: n(x[q_col]) * n(x[p_col]), axis=1).sum()
-    if pl_col:
-        # Avoid 'Total' rows in Performance
-        results["lt_pl"] += perf[~perf[cat_col].str.contains('Total', na=False, case=False)][pl_col].apply(n).sum()
+    sell_price = cost_of_slice * (1 + (target_profit_pct / 100))
+    rem_basis = sum(l['basis'] * (l['qty'] / (l['qty']+0.00001)) for l in queue) # Simplified
+    
+    return {
+        "sell_price": sell_price,
+        "rem_units": total_held - units_to_sell,
+        "rem_basis": rem_basis,
+        "total_held": total_held
+    }
 
-    # FY26 SPECIFIC (FOR THE SPLITS)
-    if tab == "FY26":
-        results["fy_inv"] = trades[trades[q_col].apply(n) > 0].apply(lambda x: n(x[q_col]) * n(x[p_col]), axis=1).sum()
-        results["fy_pl"] = perf[~perf[cat_col].str.contains('Total', na=False, case=False)][pl_col].apply(n).sum()
+# --- SECTION 3: APP UI & TABS ---
+st.set_page_config(page_title="My Portfolio App", layout="wide")
+
+# (Data loading logic from your connection goes here - producing df_all)
+# Example columns mapping: A=Activity, B=Type, C=Description, D=Category, E=Currency, F=Ticker... M=Basis
+
+tab_metrics, tab_holdings, tab_fifo = st.tabs(["📊 Metrics", "Current Holdings", "🧮 FIFO Calculator"])
+
+with tab_metrics:
+    st.header("Portfolio Performance Metrics")
+    # Applying formulas to different year filters
+    metrics_26 = get_metrics_from_logic(df_all[df_all['Source'] == 'FY26'])
+    metrics_25 = get_metrics_from_logic(df_all[df_all['Source'] == 'FY25'])
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Lifetime Investment (USD)", f"${(metrics_26['inv_usd'] + metrics_25['inv_usd']):,.2f}")
+    col2.metric("Total Realized Stocks", f"${(metrics_26['realized_stocks_total'] + metrics_25['realized_stocks_total']):,.2f}")
+
+with tab_holdings:
+    st.header("Current Portfolio Snapshot")
+    # Generate unique list of tickers from 'Trades' in Col F
+    tickers = df_all[df_all['A'] == 'Trades']['F'].unique()
+    # (Display table logic for units held)
+
+with tab_fifo:
+    st.header("Interactive FIFO Sell Calculator")
+    
+    ticker_choice = st.selectbox("Select Stock", df_all[df_all['A'] == 'Trades']['F'].unique())
+    mode = st.radio("Calculation Basis", ["Units", "Percentage"])
+    
+    # Get current state for this stock
+    state = run_fifo_engine(df_all, ticker_choice, 0, False, 0)
+    
+    if mode == "Units":
+        amt = st.slider("Units to Sell", 0.0, state['total_held'], step=1.0)
+    else:
+        amt = st.slider("Percentage to Sell", 0, 100, 25)
         
-        # Commission Split: Stock (short tickers) vs Forex (long/contains '.')
-        results["s_comm"] = abs(trades[trades[sym_col].str.len() <= 5][c_col].apply(n).sum())
-        results["f_comm"] = abs(trades[trades[sym_col].str.len() > 5][c_col].apply(n).sum())
-
-# --- THE OUTPUT ---
-st.header("Validated Topline Metrics")
-a, b = st.columns(2)
-a.metric("(a) Lifetime Investment", f"${results['lt_inv']:,.2f}")
-b.metric("(b) Lifetime P/L", f"${results['lt_pl']:,.2f}")
-
-c, d = st.columns(2)
-c.metric("(c) Total FY26 Investment", f"${results['fy_inv']:,.2f}")
-d.metric("(d) Total FY26 P/L", f"${results['fy_pl']:,.2f}")
-
-st.subheader("(e) FY26 Commission Split")
-st.write(f"**Stock Commissions:** ${results['s_comm']:,.2f}")
-st.write(f"**Forex Commissions:** ${results['f_comm']:,.2f}")
-st.write(f"**Total FY26 Fees:** ${results['s_comm'] + results['f_comm']:,.2f}")
+    profit_pct = st.number_input("Target Profit %", value=15.0)
+    
+    if st.button("Calculate Sell Value"):
+        res = run_fifo_engine(df_all, ticker_choice, amt, (mode == "Percentage"), profit_pct)
+        
+        st.success(f"### Target Sell Price: ${res['sell_price']:,.2f}")
+        
+        st.subheader("Remaining Stock Summary")
+        c1, c2 = st.columns(2)
+        c1.metric("Remaining Units", f"{res['rem_units']:.2f}")
+        c2.metric("Remaining Cost Basis", f"${res['rem_basis']:,.2f}")
