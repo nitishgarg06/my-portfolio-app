@@ -5,20 +5,15 @@ import pandas as pd
 st.set_page_config(layout="wide", page_title="Portfolio App")
 st.title("📈 Portfolio Management App")
 
-# Initialize df_all
-df_all = pd.DataFrame()
-
-# 1. DATA LOADING
+# 1. DATA LOADING (Force A-M Column mapping)
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    
     def get_and_prep(sheet_name):
         df = conn.read(worksheet=sheet_name)
         if df is not None and not df.empty:
-            df = df.iloc[:, :13] # Columns A through M
+            df = df.iloc[:, :13] 
             df.columns = list("ABCDEFGHIJKLM")
             df['YearSource'] = sheet_name
-            # Clean numeric columns
             for col in ['F', 'G', 'H', 'I', 'K', 'M']:
                 df[col] = pd.to_numeric(df[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0)
             return df
@@ -27,9 +22,20 @@ try:
     df_all = pd.concat([get_and_prep("FY24"), get_and_prep("FY25"), get_and_prep("FY26")], ignore_index=True)
 except Exception as e:
     st.error(f"Connection Error: {e}")
+    st.stop()
 
 if not df_all.empty:
-    # --- HELPER: SUMIFS REPLICATION ---
+    # --- SIDEBAR FILTER ---
+    st.sidebar.header("Filter View")
+    view_choice = st.sidebar.selectbox("Select Period", ["Lifetime", "FY26", "FY25", "FY24"])
+    
+    # Filter the dataframe based on selection
+    if view_choice == "Lifetime":
+        df_view = df_all
+    else:
+        df_view = df_all[df_all['YearSource'] == view_choice]
+
+    # --- SUMIFS REPLICATION FUNCTION ---
     def s_if(df_target, target_col, a=None, b=None, c=None, d=None, e=None):
         mask = pd.Series([True] * len(df_target))
         if a: mask &= (df_target['A'].astype(str).str.strip() == a)
@@ -43,124 +49,109 @@ if not df_all.empty:
     tab_summary, tab_holdings, tab_fifo = st.tabs(["📊 Summary", "Current Holdings", "🧮 FIFO Calculator"])
 
     with tab_summary:
-        st.header("Lifetime Performance Metrics")
+        st.header(f"Performance Metrics: {view_choice}")
         
-        # Calculate totals across all years
-        inv_usd = s_if(df_all, 'M', a="Trades", b="Total", d="Stocks", e="USD")
-        inv_aud = s_if(df_all, 'M', a="Trades", b="Total", d="Stocks", e="AUD")
-        div_usd = s_if(df_all, 'F', a="Dividends", c="Total")
-        div_aud = s_if(df_all, 'F', a="Dividends", c="Total in AUD")
-        tax_usd = s_if(df_all, 'F', a="Withholding Tax", c="Total")
-        tax_aud = s_if(df_all, 'F', a="Withholding Tax", c="Total in AUD")
-        depo_aud = s_if(df_all, 'F', a="Deposits & Withdrawals", c="Total")
+        # Row 1: Primary Investment Metrics
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Investment (USD)", f"${s_if(df_view, 'M', a='Trades', b='Total', d='Stocks', e='USD'):,.2f}")
+        c2.metric("Total Investment (AUD)", f"${s_if(df_view, 'M', a='Trades', b='Total', d='Stocks', e='AUD'):,.2f}")
+        c3.metric("Funds Deposited (AUD)", f"${s_if(df_view, 'F', a='Deposits & Withdrawals', c='Total'):,.2f}")
 
-        # Realized performance
-        def get_realized(scope_label):
-            sp = s_if(df_all, 'F', a="Realized & Unrealized Performance Summary", c=scope_label)
-            sl = s_if(df_all, 'G', a="Realized & Unrealized Performance Summary", c=scope_label)
-            lp = s_if(df_all, 'H', a="Realized & Unrealized Performance Summary", c=scope_label)
-            ll = s_if(df_all, 'I', a="Realized & Unrealized Performance Summary", c=scope_label)
+        # Row 2: Dividends & Tax
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Dividends (USD)", f"${s_if(df_view, 'F', a='Dividends', c='Total'):,.2f}")
+        c5.metric("Dividends (AUD)", f"${s_if(df_view, 'F', a='Dividends', c='Total in AUD'):,.2f}")
+        c6.metric("Withholding Tax (USD)", f"${s_if(df_view, 'F', a='Withholding Tax', c='Total'):,.2f}")
+
+        # Row 3: Realized Logic
+        st.divider()
+        st.subheader("Realized Performance Summary")
+        
+        def get_realized_group(scope):
+            sp = s_if(df_view, 'F', a="Realized & Unrealized Performance Summary", c=scope)
+            sl = s_if(df_view, 'G', a="Realized & Unrealized Performance Summary", c=scope)
+            lp = s_if(df_view, 'H', a="Realized & Unrealized Performance Summary", c=scope)
+            ll = s_if(df_view, 'I', a="Realized & Unrealized Performance Summary", c=scope)
             return sp, sl, lp, ll
 
-        r_st_p, r_st_l, r_lt_p, r_lt_l = get_realized("Total (All Assets)")
-        s_st_p, s_st_l, s_lt_p, s_lt_l = get_realized("Stocks")
-        f_st_p, f_st_l, f_lt_p, f_lt_l = get_realized("Forex")
+        # Data for Stocks, Forex, and All Assets
+        s_vals = get_realized_group("Stocks")
+        f_vals = get_realized_group("Forex")
+        a_vals = get_realized_group("Total (All Assets)")
 
-        # Metrics Grid
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Investment (USD)", f"${inv_usd:,.2f}")
-        c1.metric("Dividends (USD)", f"${div_usd:,.2f}")
-        c1.metric("Withholding Tax (USD)", f"${tax_usd:,.2f}")
-        
-        c2.metric("Total Investment (AUD)", f"${inv_aud:,.2f}")
-        c2.metric("Dividends (AUD)", f"${div_aud:,.2f}")
-        c2.metric("Withholding Tax (AUD)", f"${tax_aud:,.2f}")
-        
-        c3.metric("Funds Deposited (AUD)", f"${depo_aud:,.2f}")
-        
-        st.divider()
-        st.subheader("Realized Gains/Losses")
-        col_st, col_lt, col_tot = st.columns(3)
-        
-        with col_st:
-            st.write("**Short Term**")
-            st.write(f"Stocks: ${s_st_p + s_st_l:,.2f}")
-            st.write(f"Forex: ${f_st_p + f_st_l:,.2f}")
-            st.write(f"Total: ${r_st_p + r_st_l:,.2f}")
-
-        with col_lt:
-            st.write("**Long Term**")
-            st.write(f"Stocks: ${s_lt_p + s_lt_l:,.2f}")
-            st.write(f"Forex: ${f_lt_p + f_lt_l:,.2f}")
-            st.write(f"Total: ${r_lt_p + r_lt_l:,.2f}")
-
-        with col_tot:
-            st.write("**Combined Total**")
-            st.write(f"Stocks Realized: ${s_st_p + s_st_l + s_lt_p + s_lt_l:,.2f}")
-            st.write(f"Forex Realized: ${f_st_p + f_st_l + f_lt_p + f_lt_l:,.2f}")
-            st.write(f"Grand Total: ${s_st_p + s_st_l + s_lt_p + s_lt_l + f_st_p + f_st_l + f_lt_p + f_lt_l:,.2f}")
+        # Create a Comparison Table for Realized Metrics
+        realized_data = {
+            "Metric": ["S/T Profit", "S/T Loss", "L/T Profit", "L/T Loss", "Total"],
+            "Stocks": [s_vals[0], s_vals[1], s_vals[2], s_vals[3], sum(s_vals)],
+            "Forex": [f_vals[0], f_vals[1], f_vals[2], f_vals[3], sum(f_vals)],
+            "Total Assets": [a_vals[0], a_vals[1], a_vals[2], a_vals[3], sum(a_vals)]
+        }
+        st.table(pd.DataFrame(realized_data).set_index("Metric").style.format("${:,.2f}"))
 
     with tab_holdings:
-        st.header("Current Open Positions")
-        # Filter only Data rows for Trades to calculate current units
+        st.header("Open Positions (All Time)")
+        # Holdings MUST look at all historical data to be accurate
         trades_df = df_all[(df_all['A'] == "Trades") & (df_all['B'] == "Data")]
         if not trades_df.empty:
-            summary = trades_df.groupby('F').agg({'K': 'sum', 'M': 'sum'}).reset_index()
-            summary = summary[summary['K'] > 0.001] # Hide closed positions
-            summary.columns = ['Ticker', 'Total Units', 'Total Basis']
-            st.dataframe(summary, use_container_width=True)
+            holdings = trades_df.groupby('F').agg({'K': 'sum', 'M': 'sum'}).reset_index()
+            holdings = holdings[holdings['K'] > 0.01] # Filter out sold stocks
+            holdings.columns = ['Ticker', 'Current Units', 'Total Cost Basis']
+            st.dataframe(holdings, use_container_width=True)
         else:
-            st.warning("No individual trade data found to calculate holdings.")
+            st.info("No trade data found in Column A='Trades' and Column B='Data'.")
 
     with tab_fifo:
-        st.header("FIFO Sell Calculator")
-        # Ensure we are pulling symbols from individual trade rows
-        calc_stocks = df_all[(df_all['A'] == "Trades") & (df_all['B'] == "Data")]['F'].unique()
+        st.header("Interactive FIFO Sell Calculator")
+        # Pull unique tickers from Data rows
+        ticker_options = df_all[(df_all['A'] == "Trades") & (df_all['B'] == "Data")]['F'].unique()
         
-        if len(calc_stocks) > 0:
-            ticker = st.selectbox("Select Stock", sorted(calc_stocks))
+        if len(ticker_options) > 0:
+            sel_ticker = st.selectbox("Select Stock", sorted(ticker_options))
             
-            # Get data for this stock
-            s_data = df_all[(df_all['A'] == "Trades") & (df_all['B'] == "Data") & (df_all['F'] == ticker)].copy()
-            total_held = s_data['K'].sum()
+            # FIFO Processing for selected ticker
+            s_data = df_all[(df_all['F'] == sel_ticker) & (df_all['A'] == "Trades") & (df_all['B'] == "Data")].copy()
+            total_units = s_data['K'].sum()
             
-            mode = st.radio("Sell by:", ["Units", "Percentage"])
-            if mode == "Units":
-                amt = st.slider("Select Units", 0.0, float(total_held), step=0.01)
-                units_to_sell = amt
+            # UI Inputs
+            col_in1, col_in2 = st.columns(2)
+            calc_mode = col_in1.radio("Sell By:", ["Units", "Percentage"])
+            target_pct = col_in2.number_input("Target Profit %", value=15.0)
+            
+            if calc_mode == "Units":
+                sell_amt = st.slider("Units to Sell", 0.0, float(total_units), step=0.01)
             else:
-                pct = st.slider("Select Percentage", 0, 100, 25)
-                units_to_sell = (pct / 100) * total_held
-            
-            profit_goal = st.number_input("Target Profit %", value=15.0)
-            
-            # FIFO Logic calculation
-            if units_to_sell > 0:
-                # Build queue of buys
+                sell_pct = st.slider("Percentage to Sell", 0, 100, 20)
+                sell_amt = (sell_pct / 100) * total_units
+
+            # FIFO Calculation
+            if sell_amt > 0:
                 queue = []
                 for _, row in s_data.iterrows():
                     if row['K'] > 0: queue.append({'q': row['K'], 'b': row['M']})
-                    else: # Subtract sells from queue
-                        rem_s = abs(row['K'])
-                        while rem_s > 0 and queue:
-                            if queue[0]['q'] <= rem_s: rem_s -= queue.pop(0)['q']
+                    else:
+                        rem = abs(row['K'])
+                        while rem > 0 and queue:
+                            if queue[0]['q'] <= rem: rem -= queue.pop(0)['q']
                             else:
-                                queue[0]['q'] -= rem_s
-                                rem_s = 0
+                                queue[0]['q'] -= rem
+                                rem = 0
                 
-                # Calculate cost of units to be sold
-                temp_u, cost_slice = units_to_sell, 0
+                # Calculate cost of units sold
+                tmp_qty, cost_of_sale = sell_amt, 0
                 for lot in queue:
-                    if temp_u <= 0: break
-                    take = min(lot['q'], temp_u)
-                    cost_slice += (take / lot['q']) * lot['b']
-                    temp_u -= take
+                    if tmp_qty <= 0: break
+                    taken = min(lot['q'], tmp_qty)
+                    cost_of_sale += (taken / lot['q']) * lot['b']
+                    tmp_qty -= taken
                 
-                target_val = cost_slice * (1 + (profit_goal / 100))
+                target_val = cost_of_sale * (1 + (target_pct / 100))
                 
-                st.success(f"**Target Sell Value:** ${target_val:,.2f}")
-                st.info(f"**Remaining Units:** {total_held - units_to_sell:,.4f}")
+                st.divider()
+                st.success(f"### Target Sell Value: ${target_val:,.2f}")
+                st.write(f"Calculated Cost Basis for these units: ${cost_of_sale:,.2f}")
+                st.info(f"Remaining Units if sold: {total_units - sell_amt:,.4f}")
         else:
-            st.error("No valid trade symbols found for the calculator.")
+            st.warning("Ensure Column A contains 'Trades' and Column B contains 'Data' to use the calculator.")
+
 else:
-    st.warning("Dataframe is empty. Please check Google Sheet worksheet names and column layout.")
+    st.error("Data could not be loaded. Check your Google Sheet connection and worksheet names.")
