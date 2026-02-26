@@ -2,94 +2,79 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
-# ==========================================
-# MODULE 1: THE LOCKED SUMMARY ENGINE (Updated for Safety)
-# ==========================================
-def get_summary_metrics(df_target):
-    def s_if(target_col, a=None, b=None, c=None, d=None, e=None):
-        if df_target.empty: return 0.0
-        mask = pd.Series([True] * len(df_target), index=df_target.index)
-        if a: mask &= (df_target['A'].astype(str).str.strip() == a)
-        if b: mask &= (df_target['B'].astype(str).str.strip() == b)
-        if c: mask &= (df_target['C'].astype(str).str.strip() == c)
-        if d: mask &= (df_target['D'].astype(str).str.strip() == d)
-        if e: mask &= (df_target['E'].astype(str).str.strip() == e)
-        
-        # FIX: Convert to numeric ONLY during the sum to protect text in other rows
-        values = pd.to_numeric(
-            df_target.loc[mask, target_col].astype(str).replace(r'[$,\s()]', '', regex=True), 
-            errors='coerce'
-        ).fillna(0.0)
-        return float(values.sum())
-
-    def get_realized(scope):
-        return [s_if('F', a="Realized & Unrealized Performance Summary", c=scope),
-                s_if('G', a="Realized & Unrealized Performance Summary", c=scope),
-                s_if('H', a="Realized & Unrealized Performance Summary", c=scope),
-                s_if('I', a="Realized & Unrealized Performance Summary", c=scope),
-                0.0] # Total calculated in the table UI
-
-    return {
-        "inv_usd": s_if('M', a='Trades', b='Total', d='Stocks', e='USD'),
-        "inv_aud": s_if('M', a='Trades', b='Total', d='Stocks', e='AUD'),
-        "div_usd": s_if('F', a='Dividends', c='Total'),
-        "div_aud": s_if('F', a='Dividends', c='Total in AUD'),
-        "tax_usd": s_if('F', a='Withholding Tax', c='Total'),
-        "depo_aud": s_if('F', a='Deposits & Withdrawals', c='Total'),
-        "stocks_realized": get_realized("Stocks"),
-        "forex_realized": get_realized("Forex"),
-        "total_realized": get_realized("Total (All Assets)")
-    }
+st.set_page_config(layout="wide", page_title="Portfolio Alpha")
 
 # ==========================================
-# MODULE 2: DATA LOADING (REPAIRED)
+# MODULE 1: DATA LOADING (TWO SEPARATE BUCKETS)
 # ==========================================
 @st.cache_data(ttl=600)
-def load_data():
+def load_data_split():
     conn = st.connection("gsheets", type=GSheetsConnection)
-    def prep(name):
-        df = conn.read(worksheet=name)
-        if df is not None and not df.empty:
-            df = df.iloc[:, :13]
-            df.columns = list("ABCDEFGHIJKLM")
-            df['YearSource'] = name
-            # FIX: We NO LONGER force F, G, H, I to numbers here. 
-            # We only force K and M because they are ALWAYS numbers.
-            for col in ['K', 'M']:
-                df[col] = pd.to_numeric(df[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
-            return df
-        return pd.DataFrame()
-    return pd.concat([prep("FY24"), prep("FY25"), prep("FY26")], ignore_index=True)
+    def prep_sheet(name):
+        return conn.read(worksheet=name).iloc[:, :13]
 
-df_all = load_data()
+    # Load raw data once
+    fy24 = prep_sheet("FY24")
+    fy25 = prep_sheet("FY25")
+    fy26 = prep_sheet("FY26")
+    raw_combined = pd.concat([fy24, fy25, fy26], ignore_index=True)
+    raw_combined.columns = list("ABCDEFGHIJKLM")
+    raw_combined['YearSource'] = "FY" # Placeholder logic
+
+    # --- BUCKET A: FOR SUMMARY (The "Locked" version) ---
+    df_summary = raw_combined.copy()
+    for col in ['F', 'G', 'H', 'I', 'K', 'M']:
+        df_summary[col] = pd.to_numeric(df_summary[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
+
+    # --- BUCKET B: FOR FIFO/HOLDINGS (The "Text-Safe" version) ---
+    df_fifo = raw_combined.copy()
+    for col in ['K', 'M']: # Only force Quantity and Cost to numbers
+        df_fifo[col] = pd.to_numeric(df_fifo[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
+    
+    return df_summary, df_fifo
+
+# Pull the two separate instances
+df_summary, df_fifo = load_data_split()
 
 # ==========================================
-# MODULE 3: TABS (FIFO Dropdown Fixed)
+# MODULE 2: THE LOCKED SUMMARY ENGINE
 # ==========================================
-st.sidebar.header("Navigation")
-view_choice = st.sidebar.selectbox("Select Period", ["Lifetime", "FY26", "FY25", "FY24"])
-df_view = df_all if view_choice == "Lifetime" else df_all[df_all['YearSource'] == view_choice]
+def s_if(df_target, target_col, a=None, b=None, c=None, d=None, e=None):
+    if df_target.empty: return 0.0
+    mask = pd.Series([True] * len(df_target), index=df_target.index)
+    if a: mask &= (df_target['A'].astype(str).str.strip() == a)
+    if b: mask &= (df_target['B'].astype(str).str.strip() == b)
+    if c: mask &= (df_target['C'].astype(str).str.strip() == c)
+    if d: mask &= (df_target['D'].astype(str).str.strip() == d)
+    if e: mask &= (df_target['E'].astype(str).str.strip() == e)
+    return float(df_target.loc[mask, target_col].sum())
 
+# ==========================================
+# MODULE 3: UI & TABS
+# ==========================================
 tab1, tab2, tab3 = st.tabs(["📊 Summary", "Current Holdings", "🧮 FIFO Calculator"])
 
 with tab1:
-    m = get_summary_metrics(df_view)
-    st.header(f"Summary: {view_choice}")
-    # ... (Standard Summary UI code follows)
+    st.header("Summary (Locked Instance)")
+    c1, c2, c3 = st.columns(3)
+    # Using df_summary bucket
+    c1.metric("Total Investment (USD)", f"${s_if(df_summary, 'M', a='Trades', b='Total', d='Stocks', e='USD'):,.2f}")
+    c2.metric("Total Investment (AUD)", f"${s_if(df_summary, 'M', a='Trades', b='Total', d='Stocks', e='AUD'):,.2f}")
+    c3.metric("Funds Deposited (AUD)", f"${s_if(df_summary, 'F', a='Deposits & Withdrawals', c='Total'):,.2f}")
+    # ... Rest of your summary metrics using df_summary ...
 
 with tab3:
-    st.header("FIFO Sell Calculator")
-    
-    # Now Column F will correctly show 'AMD', 'TSLA', etc. instead of '0.0'
-    is_trade = df_all['A'].astype(str).str.strip() == "Trades"
-    is_data = df_all['B'].astype(str).str.strip() == "Data"
-    fifo_source = df_all[is_trade & is_data]
+    st.header("FIFO Calculator (Text-Safe Instance)")
+    # Using df_fifo bucket where Column F is still TEXT
+    is_trade = df_fifo['A'].astype(str).str.strip() == "Trades"
+    is_data = df_fifo['B'].astype(str).str.strip() == "Data"
+    fifo_source = df_fifo[is_trade & is_data]
     
     ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() 
                          if str(x).strip() not in ['0.0', 'nan', 'None', '']])
     
     if ticker_list:
         sel_t = st.selectbox("Select Stock", ticker_list)
-        st.success(f"Selected: {sel_t}")
+        st.success(f"Successfully identified ticker: {sel_t}")
     else:
-        st.error("Dropdown is still empty. Check Column F in your 'Data' rows.")
+        st.error("Dropdown still empty. Check Column F in Google Sheets.")
