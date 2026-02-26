@@ -105,44 +105,77 @@ with tab2:
         st.dataframe(h.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}"}))
 
 with tab3:
-    st.header("FIFO Sell Calculator")
-    # Uses df_fifo so ticker names in Col F are visible
+    st.header("🧮 FIFO Sell Calculator")
+    
+    # 1. Filter the 'Text-Safe' bucket for individual trade data
     f_data = df_fifo[(df_fifo['A'].astype(str).str.strip() == "Trades") & 
                      (df_fifo['B'].astype(str).str.strip() == "Data")]
     
     ticker_list = sorted([str(x).strip() for x in f_data['F'].unique() if str(x).strip() not in ['0.0', 'nan', 'None', '']])
     
     if ticker_list:
-        sel_t = st.selectbox("Select Stock", ticker_list)
-        # Reconstruct FIFO
+        sel_t = st.selectbox("Select Stock to Analyze", ticker_list)
+        
+        # Pull chronological history for this stock
         s_hist = f_data[f_data['F'].astype(str).str.strip() == sel_t].copy()
         
+        # Build the FIFO Queue and Inventory Tracker
         queue = []
         for _, r in s_hist.iterrows():
             q, b = float(r['K']), float(r['M'])
-            if q > 0: queue.append({'q': q, 'b': b})
+            if q > 0: 
+                queue.append({'qty': q, 'basis': b, 'price': b/q if q != 0 else 0})
             elif q < 0:
                 rem = abs(q)
                 while rem > 0 and queue:
-                    if queue[0]['q'] <= rem: rem -= queue.pop(0)['q']
+                    if queue[0]['qty'] <= rem:
+                        rem -= queue.pop(0)['qty']
                     else:
-                        queue[0]['q'] -= rem
+                        queue[0]['qty'] -= rem
                         rem = 0
         
-        t_held = sum(i['q'] for i in queue)
-        col_1, col_2 = st.columns(2)
-        profit = col_2.number_input("Target Profit %", value=15.0)
-        amt = col_1.slider("Units", 0.0, float(t_held), step=0.01)
+        total_held = sum(i['qty'] for i in queue)
+        
+        # --- UI: HOLDING BREAKDOWN ---
+        with st.expander("View Current Open Lots"):
+            if queue:
+                lots_df = pd.DataFrame(queue)
+                lots_df.columns = ['Remaining Units', 'Total Cost Basis', 'Price per Unit']
+                st.table(lots_df.style.format({"Remaining Units": "{:.4f}", "Total Cost Basis": "${:,.2f}", "Price per Unit": "${:,.2f}"}))
+            else:
+                st.write("No open lots found.")
 
+        # --- UI: CALCULATOR ---
+        st.subheader("Simulate a Sale")
+        c_in1, c_in2, c_in3 = st.columns([2, 1, 1])
+        
+        amt = c_in1.slider("Units to Sell", 0.0, float(total_held), step=0.01)
+        profit_goal = c_in2.number_input("Target Profit %", value=15.0)
+        
         if amt > 0:
+            # Calculate cost of the FIFO slice
             temp_q, cost_sum = amt, 0.0
             for lot in queue:
                 if temp_q <= 0: break
-                take = min(lot['q'], temp_q)
-                cost_sum += (take / lot['q']) * lot['b']
+                take = min(lot['qty'], temp_q)
+                cost_sum += (take / lot['qty']) * lot['basis']
                 temp_q -= take
-            target_v = cost_sum * (1 + (profit/100))
-            st.success(f"### Target Sell Value: ${target_v:,.2f}")
-            st.info(f"Remaining: {t_held - amt:,.4f} units")
+            
+            target_val = cost_sum * (1 + (profit_goal/100))
+            price_per_share = target_val / amt
+            
+            st.divider()
+            res1, res2, res3 = st.columns(3)
+            
+            res1.metric("Target Total Sell Value", f"${target_val:,.2f}")
+            res2.metric("Target Price per Share", f"${price_per_share:,.2f}")
+            res3.metric("Estimated Net Profit", f"${target_val - cost_sum:,.2f}", delta=f"{profit_goal}%")
+            
+            st.info(f"**FIFO Logic Note:** These units will be sold from your oldest lots first. The total cost basis for this specific slice of {amt} units is **${cost_sum:,.2f}**.")
+            
+            # Progress bar showing how much of your total holding you are selling
+            st.write(f"Selling **{ (amt/total_held)*100 :.1f}%** of your total {total_held:.4f} units.")
+            st.progress(amt / total_held)
+
     else:
-        st.error("Dropdown still empty. Check Column F in Google Sheets for individual trade rows.")
+        st.error("No valid tickers identified in Column F for trade data rows.")
