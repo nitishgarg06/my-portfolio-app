@@ -111,33 +111,64 @@ with tab2:
 with tab3:
     st.header("FIFO Sell Calculator")
     
-    # --- 1. THE BRUTE FORCE FINDER ---
-    st.subheader("🔍 Data Map")
-    # This grabs the first 10 rows where Column A is 'Trades'
-    # and shows us columns A, B, and F.
-    raw_trades_sample = df_all[df_all['A'].astype(str).str.strip() == "Trades"].head(10)
+    # --- 1. THE RECOVERY FILTER ---
+    # We look for rows that are 'Trades' but NOT the 'Total' or 'Sub Total' rows
+    # This leaves us with only the individual 'Data' rows
+    is_trade_row = df_all['A'].astype(str).str.strip().str.upper() == "TRADES"
+    is_not_total = ~df_all['B'].astype(str).str.strip().str.upper().str.contains("TOTAL", na=False)
     
-    if not raw_trades_sample.empty:
-        st.write("Here is what Python sees in your 'Trades' rows:")
-        st.table(raw_trades_sample[['A', 'B', 'F', 'K', 'M']])
-        
-        # Check if 'Data' exists in Column B
-        b_values = raw_trades_sample['B'].unique().tolist()
-        st.write(f"Unique values found in Column B for these rows: {b_values}")
-    else:
-        st.error("Python can't find ANY rows where Column A is 'Trades'.")
-        st.write("Unique values available in Column A:", df_all['A'].unique()[:10])
-
-    # --- 2. THE REPAIR ATTEMPT ---
-    # This filter is now case-insensitive and ignores spaces
-    is_trade = df_all['A'].astype(str).str.strip().str.upper() == "TRADES"
-    is_data = df_all['B'].astype(str).str.strip().str.upper() == "DATA"
+    # Create the source for FIFO
+    fifo_source = df_all[is_trade_row & is_not_total].copy()
     
-    fifo_source = df_all[is_trade & is_data]
-    ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() if str(x).strip() not in ['0.0', 'nan', '0', '']])
+    # Pull tickers from Column F
+    # We exclude common non-ticker strings
+    ticker_list = sorted([
+        str(x).strip() for x in fifo_source['F'].unique() 
+        if str(x).strip() not in ['0.0', 'nan', '0', 'None', '', 'Symbol', 'Ticker']
+    ])
 
     if ticker_list:
-        sel_t = st.selectbox("Select Stock", ticker_list, key="fifo_select")
-        st.success(f"Ticker {sel_t} selected successfully!")
+        sel_t = st.selectbox("Select Stock", ticker_list)
+        
+        # --- 2. CALCULATE FIFO QUEUE ---
+        # Filter for the specific stock selected
+        s_history = fifo_source[fifo_source['F'].astype(str).str.strip() == sel_t].copy()
+        
+        inventory = []
+        for _, r in s_history.iterrows():
+            qty, basis = float(r['K']), float(r['M'])
+            if qty > 0:  # BUY
+                inventory.append({'q': qty, 'b': basis})
+            elif qty < 0:  # SELL (FIFO subtraction)
+                rem_sell = abs(qty)
+                while rem_sell > 0 and inventory:
+                    if inventory[0]['q'] <= rem_sell:
+                        rem_sell -= inventory.pop(0)['q']
+                    else:
+                        inventory[0]['q'] -= rem_sell
+                        rem_sell = 0
+        
+        total_held = sum(i['q'] for i in inventory)
+        
+        # --- 3. CALCULATOR UI ---
+        c_in1, c_in2 = st.columns(2)
+        profit_goal = c_in2.number_input("Target Profit %", value=15.0)
+        amt = c_in1.slider("Units to Sell", 0.0, float(total_held), step=0.01)
+
+        if amt > 0:
+            temp_amt, cost_sum = amt, 0.0
+            for lot in inventory:
+                if temp_amt <= 0: break
+                take = min(lot['q'], temp_amt)
+                cost_sum += (take / lot['q']) * lot['b']
+                temp_amt -= take
+            
+            target_val = cost_sum * (1 + (profit_goal/100))
+            st.success(f"### Target Sell Value: ${target_val:,.2f}")
+            st.info(f"Remaining Units: {total_held - amt:,.4f}")
     else:
-        st.warning("Dropdown is still empty based on 'Trades' + 'Data' filter.")
+        st.error("No tickers found. Please check if your stock symbols are in Column F.")
+        # Final emergency debug: show the user exactly what is in Column F for Trade rows
+        st.write("Current content of Column F for 'Trades' rows:", df_all[is_trade_row]['F'].unique())
+
+
