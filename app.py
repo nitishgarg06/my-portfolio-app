@@ -105,37 +105,34 @@ with tab2:
         # Clean Tickers
         h_data['Ticker'] = h_data['F'].astype(str).str.strip().str.upper()
         
-        # 2. Group by Ticker and sum up the key columns
-        # Column H = Qty, Column M = Investment, Column I = Commissions (assuming I based on previous patterns)
-        # Note: If your commissions are in a different column, change 'I' below.
+        # 2. Group by Ticker
+        # H = Units, M = Investment (which usually already includes commissions in your sheet)
         holdings = h_data.groupby('Ticker').agg({
             'H': 'sum',   # Total Units
-            'M': 'sum',   # Total Cost (including commissions usually)
-            'I': 'sum'    # Total Commissions paid for this ticker
+            'M': 'sum'    # Total Investment
         }).reset_index()
 
-        # 3. Filter out closed positions (where units are 0)
+        # 3. Filter out closed positions (where units are near zero)
         holdings = holdings[holdings['H'] > 0.001]
 
         # 4. Calculate Derived Metrics
         holdings['Avg. Buy Price'] = holdings['M'] / holdings['H']
         
         # Rename columns for the UI
-        holdings.columns = ['Ticker', 'Units', 'Total Investment', 'Total Commissions', 'Avg. Buy Price']
+        holdings.columns = ['Ticker', 'Units', 'Total Investment (inc comm.)', 'Avg. Buy Price']
         
         # 5. Display Summary Metrics
         c1, c2 = st.columns(2)
         c1.metric("Total Active Positions", len(holdings))
-        c2.metric("Portfolio Cost Basis", f"${holdings['Total Investment'].sum():,.2f}")
+        c2.metric("Portfolio Cost Basis", f"${holdings['Total Investment (inc comm.)'].sum():,.2f}")
 
         # 6. The Holdings Table
         st.dataframe(
-            holdings[['Ticker', 'Units', 'Avg. Buy Price', 'Total Investment', 'Total Commissions']]
+            holdings[['Ticker', 'Units', 'Avg. Buy Price', 'Total Investment (inc comm.)']]
             .style.format({
                 "Units": "{:.4f}",
                 "Avg. Buy Price": "${:,.2f}",
-                "Total Investment": "${:,.2f}",
-                "Total Commissions": "${:,.2f}"
+                "Total Investment (inc comm.)": "${:,.2f}"
             }),
             use_container_width=True,
             hide_index=True
@@ -271,6 +268,7 @@ with tab3:
             st.warning(f"Calculated holding for {sel_t} is 0.")
     else:
         st.error("No active holdings found in individual trade data.")
+
 
 
 
