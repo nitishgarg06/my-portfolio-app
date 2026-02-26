@@ -1,6 +1,7 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+import yfinance as yf
 
 st.set_page_config(layout="wide", page_title="Portfolio Alpha")
 
@@ -95,50 +96,67 @@ with tab1:
     st.table(pd.DataFrame(real_data).set_index("Metric").style.format("${:,.2f}"))
 
 with tab2:
-    st.header("🏢 Current Stock Holdings")
+    st.header("🏢 Current Stock Holdings (Live Market Data)")
     
-    # 1. Filter for individual trade data rows
     h_data = df_fifo[(df_fifo['A'].astype(str).str.strip().str.upper() == "TRADES") & 
                      (df_fifo['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
     
     if not h_data.empty:
-        # Clean Tickers
         h_data['Ticker'] = h_data['F'].astype(str).str.strip().str.upper()
-        
-        # 2. Group by Ticker
-        # H = Units, M = Investment (which usually already includes commissions in your sheet)
-        holdings = h_data.groupby('Ticker').agg({
-            'H': 'sum',   # Total Units
-            'M': 'sum'    # Total Investment
-        }).reset_index()
-
-        # 3. Filter out closed positions (where units are near zero)
+        holdings = h_data.groupby('Ticker').agg({'H': 'sum', 'M': 'sum'}).reset_index()
         holdings = holdings[holdings['H'] > 0.001]
-
-        # 4. Calculate Derived Metrics
         holdings['Avg. Buy Price'] = holdings['M'] / holdings['H']
         
-        # Rename columns for the UI
-        holdings.columns = ['Ticker', 'Units', 'Total Investment (inc comm.)', 'Avg. Buy Price']
+        # --- NEW: FETCH LIVE PRICES ---
+        with st.spinner('Fetching latest market prices...'):
+            live_prices = {}
+            for t in holdings['Ticker']:
+                try:
+                    # Logic to handle AU vs US tickers: 
+                    # If ticker is 3 letters and you have AUD trades, it might need .AX
+                    # For now, we attempt the ticker as-is.
+                    ticker_obj = yf.Ticker(t)
+                    # Get the latest price (last close or current)
+                    price = ticker_obj.fast_info['last_price']
+                    live_prices[t] = price
+                except:
+                    live_prices[t] = 0.0
+            
+            holdings['Current Price'] = holdings['Ticker'].map(live_prices)
         
-        # 5. Display Summary Metrics
-        c1, c2 = st.columns(2)
-        c1.metric("Total Active Positions", len(holdings))
-        c2.metric("Portfolio Cost Basis", f"${holdings['Total Investment (inc comm.)'].sum():,.2f}")
+        # --- CALCULATE P/L ---
+        holdings['Market Value'] = holdings['H'] * holdings['Current Price']
+        holdings['P/L $'] = holdings['Market Value'] - holdings['M']
+        holdings['P/L %'] = (holdings['P/L $'] / holdings['M']) * 100
+        
+        # Summary Metrics
+        total_market_val = holdings['Market Value'].sum()
+        total_invested = holdings['M'].sum()
+        total_pl = total_market_val - total_invested
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Portfolio Value", f"${total_market_val:,.2f}")
+        c2.metric("Total Investment", f"${total_invested:,.2f}")
+        c3.metric("Total Unrealized P/L", f"${total_pl:,.2f}", delta=f"{(total_pl/total_invested*100):.2f}%")
 
-        # 6. The Holdings Table
+        # The Table
         st.dataframe(
-            holdings[['Ticker', 'Units', 'Avg. Buy Price', 'Total Investment (inc comm.)']]
+            holdings[['Ticker', 'H', 'Avg. Buy Price', 'Current Price', 'Market Value', 'P/L $', 'P/L %']]
+            .rename(columns={'H': 'Units', 'M': 'Total Inv.'})
             .style.format({
                 "Units": "{:.4f}",
                 "Avg. Buy Price": "${:,.2f}",
-                "Total Investment (inc comm.)": "${:,.2f}"
-            }),
+                "Current Price": "${:,.2f}",
+                "Market Value": "${:,.2f}",
+                "P/L $": "${:,.2f}",
+                "P/L %": "{:.2f}%"
+            })
+            .applymap(lambda x: 'color: red' if isinstance(x, float) and x < 0 else 'color: green', subset=['P/L $', 'P/L %']),
             use_container_width=True,
             hide_index=True
         )
     else:
-        st.info("No active trade data found to display holdings.")
+        st.info("No active trade data found.")
 
 with tab3:
     st.header("🧮 FIFO Sell Calculator")
@@ -268,6 +286,7 @@ with tab3:
             st.warning(f"Calculated holding for {sel_t} is 0.")
     else:
         st.error("No active holdings found in individual trade data.")
+
 
 
 
