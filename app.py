@@ -103,20 +103,23 @@ with tab2:
     
     if not h_data.empty:
         h_data['Ticker'] = h_data['F'].astype(str).str.strip().str.upper()
-        holdings = h_data.groupby('Ticker').agg({'H': 'sum', 'M': 'sum'}).reset_index()
+        
+        # 1. Aggregate Units and Investment (M)
+        holdings = h_data.groupby('Ticker').agg({
+            'H': 'sum', 
+            'M': 'sum'
+        }).reset_index()
+        
         holdings = holdings[holdings['H'] > 0.001]
         holdings['Avg. Buy Price'] = holdings['M'] / holdings['H']
         
-        # --- NEW: FETCH LIVE PRICES ---
+        # 2. Fetch Live Prices
         with st.spinner('Fetching latest market prices...'):
             live_prices = {}
             for t in holdings['Ticker']:
                 try:
-                    # Logic to handle AU vs US tickers: 
-                    # If ticker is 3 letters and you have AUD trades, it might need .AX
-                    # For now, we attempt the ticker as-is.
                     ticker_obj = yf.Ticker(t)
-                    # Get the latest price (last close or current)
+                    # Using fast_info or regular info for the current price
                     price = ticker_obj.fast_info['last_price']
                     live_prices[t] = price
                 except:
@@ -124,34 +127,44 @@ with tab2:
             
             holdings['Current Price'] = holdings['Ticker'].map(live_prices)
         
-        # --- CALCULATE P/L ---
+        # 3. Calculate Market Value and P/L
         holdings['Market Value'] = holdings['H'] * holdings['Current Price']
         holdings['P/L $'] = holdings['Market Value'] - holdings['M']
         holdings['P/L %'] = (holdings['P/L $'] / holdings['M']) * 100
         
-        # Summary Metrics
+        # 4. Summary Metrics
         total_market_val = holdings['Market Value'].sum()
         total_invested = holdings['M'].sum()
         total_pl = total_market_val - total_invested
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Portfolio Value", f"${total_market_val:,.2f}")
-        c2.metric("Total Investment", f"${total_invested:,.2f}")
-        c3.metric("Total Unrealized P/L", f"${total_pl:,.2f}", delta=f"{(total_pl/total_invested*100):.2f}%")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Portfolio Value", f"${total_market_val:,.2f}")
+        m2.metric("Total Investment", f"${total_invested:,.2f}")
+        m3.metric("Total Unrealized P/L", f"${total_pl:,.2f}", delta=f"{(total_pl/total_invested*100 if total_invested != 0 else 0):.2f}%")
 
-        # The Table
+        # 5. Final Table Output (Restoring the Investment column)
+        # We rename columns here to match your requested terminology
+        display_df = holdings[[
+            'Ticker', 'H', 'Avg. Buy Price', 'M', 
+            'Current Price', 'Market Value', 'P/L $', 'P/L %'
+        ]].rename(columns={
+            'H': 'Units', 
+            'M': 'Total Investment (inc comm.)'
+        })
+
         st.dataframe(
-            holdings[['Ticker', 'H', 'Avg. Buy Price', 'Current Price', 'Market Value', 'P/L $', 'P/L %']]
-            .rename(columns={'H': 'Units', 'M': 'Total Inv.'})
-            .style.format({
+            display_df.style.format({
                 "Units": "{:.4f}",
                 "Avg. Buy Price": "${:,.2f}",
+                "Total Investment (inc comm.)": "${:,.2f}",
                 "Current Price": "${:,.2f}",
                 "Market Value": "${:,.2f}",
                 "P/L $": "${:,.2f}",
                 "P/L %": "{:.2f}%"
-            })
-            .applymap(lambda x: 'color: red' if isinstance(x, float) and x < 0 else 'color: green', subset=['P/L $', 'P/L %']),
+            }).applymap(
+                lambda x: 'color: #ff4b4b' if isinstance(x, (int, float)) and x < 0 else 'color: #09ab3b' if isinstance(x, (int, float)) and x > 0 else '', 
+                subset=['P/L $', 'P/L %']
+            ),
             use_container_width=True,
             hide_index=True
         )
@@ -286,6 +299,7 @@ with tab3:
             st.warning(f"Calculated holding for {sel_t} is 0.")
     else:
         st.error("No active holdings found in individual trade data.")
+
 
 
 
