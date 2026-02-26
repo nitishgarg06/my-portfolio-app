@@ -107,78 +107,96 @@ with tab2:
 with tab3:
     st.header("🧮 FIFO Sell Calculator")
     
-    # 1. Filter the 'Text-Safe' bucket for individual trade data
-    f_data = df_fifo[(df_fifo['A'].astype(str).str.strip() == "Trades") & 
-                     (df_fifo['B'].astype(str).str.strip() == "Data")]
+    # 1. Isolate individual trade data
+    f_data = df_fifo[(df_fifo['A'].astype(str).str.strip().str.upper() == "TRADES") & 
+                     (df_fifo['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
     
-    ticker_list = sorted([str(x).strip() for x in f_data['F'].unique() if str(x).strip() not in ['0.0', 'nan', 'None', '']])
+    # Clean Tickers in the dataframe to ensure matches
+    f_data['F_Clean'] = f_data['F'].astype(str).str.strip().str.upper()
+    
+    ticker_list = sorted([x for x in f_data['F_Clean'].unique() 
+                         if x not in ['0.0', 'NAN', 'NONE', '', '0']])
     
     if ticker_list:
         sel_t = st.selectbox("Select Stock to Analyze", ticker_list)
         
         # Pull chronological history for this stock
-        s_hist = f_data[f_data['F'].astype(str).str.strip() == sel_t].copy()
+        s_hist = f_data[f_data['F_Clean'] == sel_t].copy()
         
-        # Build the FIFO Queue
-        queue = []
+        # RECONSTRUCT INVENTORY
+        inventory = []
         for _, r in s_hist.iterrows():
-            q, b = float(r['K']), float(r['M'])
-            if q > 0: 
-                queue.append({'qty': q, 'basis': b, 'price': b/q if q != 0 else 0})
-            elif q < 0:
-                rem = abs(q)
-                while rem > 0 and queue:
-                    if queue[0]['qty'] <= rem:
-                        rem -= queue.pop(0)['qty']
+            q = float(r['K'])
+            b = float(r['M'])
+            
+            if q > 0:  # This is a BUY
+                inventory.append({'qty': q, 'basis': b, 'price': b/q if q != 0 else 0})
+            elif q < 0:  # This is a SELL
+                qty_to_reduce = abs(q)
+                while qty_to_reduce > 0 and inventory:
+                    if inventory[0]['qty'] <= qty_to_reduce:
+                        qty_to_reduce -= inventory.pop(0)['qty']
                     else:
-                        queue[0]['qty'] -= rem
-                        rem = 0
+                        inventory[0]['qty'] -= qty_to_reduce
+                        qty_to_reduce = 0
         
-        total_held = sum(i['qty'] for i in queue)
+        # Calculate current state
+        total_held = sum(i['qty'] for i in inventory)
+        total_basis = sum(i['basis'] for i in inventory)
         
         # --- UI: HOLDING BREAKDOWN ---
-        with st.expander("View Current Open Lots"):
-            if queue and total_held > 0:
-                lots_df = pd.DataFrame(queue)
-                lots_df.columns = ['Remaining Units', 'Total Cost Basis', 'Price per Unit']
-                st.table(lots_df.style.format({"Remaining Units": "{:.4f}", "Total Cost Basis": "${:,.2f}", "Price per Unit": "${:,.2f}"}))
+        with st.expander("📊 View Open Buy Lots (FIFO Queue)", expanded=True):
+            if inventory and total_held > 0.0001:
+                st.write(f"Confirmed Holdings: **{total_held:.4f} units**")
+                lots_df = pd.DataFrame(inventory)
+                lots_df.columns = ['Remaining Units', 'Total Cost Basis', 'Cost Price/Unit']
+                st.dataframe(lots_df.style.format({
+                    "Remaining Units": "{:.4f}", 
+                    "Total Cost Basis": "${:,.2f}", 
+                    "Cost Price/Unit": "${:,.2f}"
+                }), use_container_width=True)
             else:
-                st.write("No open lots found for this ticker (Position may be closed).")
+                st.warning(f"Calculated holding for {sel_t} is 0.")
+                st.info("If you know you own this stock, check if the 'Quantity' column (K) or 'Ticker' column (F) has typos in your spreadsheet.")
 
         # --- UI: CALCULATOR ---
-        st.subheader("Simulate a Sale")
-        
         if total_held > 0:
+            st.subheader("💰 Calculate Sell Target")
             c_in1, c_in2 = st.columns([2, 1])
             
-            # THE FIX: Ensure max_value is greater than 0.0 and handle float conversion safely
             max_val = float(total_held)
-            amt = c_in1.slider("Units to Sell", 0.0, max_val, step=0.01) if max_val > 0 else 0.0
+            # Slider for units to sell
+            amt_to_sell = c_in1.slider("Units to Sell", 0.0, max_val, value=max_val/2, step=0.0001)
             profit_goal = c_in2.number_input("Target Profit %", value=15.0)
             
-            if amt > 0:
-                # Calculate cost of the FIFO slice
-                temp_q, cost_sum = amt, 0.0
-                for lot in queue:
-                    if temp_q <= 0: break
-                    take = min(lot['qty'], temp_q)
-                    cost_sum += (take / lot['qty']) * lot['basis']
-                    temp_q -= take
+            if amt_to_sell > 0:
+                # FIFO Calculation for the specific slice
+                temp_sell_qty = amt_to_sell
+                slice_cost_basis = 0.0
                 
-                target_val = cost_sum * (1 + (profit_goal/100))
-                price_per_share = target_val / amt
+                for lot in inventory:
+                    if temp_sell_qty <= 0: break
+                    take = min(lot['qty'], temp_sell_qty)
+                    # Pro-rata basis for this specific lot
+                    slice_cost_basis += (take / lot['qty']) * lot['basis']
+                    temp_sell_qty -= take
+                
+                target_total = slice_cost_basis * (1 + (profit_goal/100))
+                target_per_share = target_total / amt_to_sell
                 
                 st.divider()
-                res1, res2, res3 = st.columns(3)
-                res1.metric("Target Total Value", f"${target_val:,.2f}")
-                res2.metric("Target Price / Share", f"${price_per_share:,.2f}")
-                res3.metric("Est. Net Profit", f"${target_val - cost_sum:,.2f}", delta=f"{profit_goal}%")
+                r1, r2, r3 = st.columns(3)
+                r1.metric("Target Total Sale", f"${target_total:,.2f}")
+                r2.metric("Target Price/Unit", f"${target_per_share:,.2f}")
+                r3.metric("Profit Lead", f"${target_total - slice_cost_basis:,.2f}", delta=f"{profit_goal}%")
                 
-                st.progress(amt / max_val)
-                st.caption(f"Selling { (amt/max_val)*100 :.1f}% of holdings. Cost basis for this slice: ${cost_sum:,.2f}")
+                st.caption(f"The cost basis for these {amt_to_sell:.4f} units is ${slice_cost_basis:,.2f}")
         else:
-            st.warning(f"You currently hold 0 units of {sel_t} according to the trade history.")
+            # DEBUG: If 0 is found, let's see what the data looks like
+            if st.checkbox("Show Raw Trade Data for Debugging"):
+                st.write(s_hist[['A', 'B', 'F', 'K', 'M']])
 
     else:
-        st.error("No valid tickers identified in Column F.")
+        st.error("No valid tickers identified. Please check Column F.")
+
 
