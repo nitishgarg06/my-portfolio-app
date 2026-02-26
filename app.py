@@ -105,7 +105,7 @@ with tab2:
         h.columns = ['Ticker', 'Units', 'Cost Basis']
         st.dataframe(h.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}"}))
 
-    with tab3:
+with tab3:
     st.header("🧮 FIFO Sell Calculator")
     
     # 1. Isolate individual trade data
@@ -258,6 +258,7 @@ with tab2:
 
     else:
         st.error("No valid tickers identified. Please check Column F.")
+
 
 
 
