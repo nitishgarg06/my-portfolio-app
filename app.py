@@ -5,39 +5,38 @@ import pandas as pd
 st.set_page_config(layout="wide", page_title="Portfolio Alpha")
 
 # ==========================================
-# MODULE 1: DATA LOADING (TWO SEPARATE BUCKETS)
+# 1. DATA LOADING (THE DUAL-INSTANCE FIX)
 # ==========================================
 @st.cache_data(ttl=600)
-def load_data_split():
+def load_all_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
-    def prep_sheet(name):
-        return conn.read(worksheet=name).iloc[:, :13]
+    def fetch(name):
+        df = conn.read(worksheet=name)
+        if df is not None and not df.empty:
+            df = df.iloc[:, :13]
+            df.columns = list("ABCDEFGHIJKLM")
+            df['YearSource'] = name
+            return df
+        return pd.DataFrame()
 
-    # Load raw data once
-    fy24 = prep_sheet("FY24")
-    fy25 = prep_sheet("FY25")
-    fy26 = prep_sheet("FY26")
-    raw_combined = pd.concat([fy24, fy25, fy26], ignore_index=True)
-    raw_combined.columns = list("ABCDEFGHIJKLM")
-    raw_combined['YearSource'] = "FY" # Placeholder logic
+    raw_data = pd.concat([fetch("FY24"), fetch("FY25"), fetch("FY26")], ignore_index=True)
 
-    # --- BUCKET A: FOR SUMMARY (The "Locked" version) ---
-    df_summary = raw_combined.copy()
+    # --- BUCKET 1: SUMMARY DATA (Forced Numeric for Calculations) ---
+    df_s = raw_data.copy()
     for col in ['F', 'G', 'H', 'I', 'K', 'M']:
-        df_summary[col] = pd.to_numeric(df_summary[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
+        df_s[col] = pd.to_numeric(df_s[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
 
-    # --- BUCKET B: FOR FIFO/HOLDINGS (The "Text-Safe" version) ---
-    df_fifo = raw_combined.copy()
-    for col in ['K', 'M']: # Only force Quantity and Cost to numbers
-        df_fifo[col] = pd.to_numeric(df_fifo[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
+    # --- BUCKET 2: FIFO DATA (Protects Column F Text) ---
+    df_f = raw_data.copy()
+    for col in ['K', 'M']: # Only force Units and Total Basis to numbers
+        df_f[col] = pd.to_numeric(df_f[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
     
-    return df_summary, df_fifo
+    return df_s, df_f
 
-# Pull the two separate instances
-df_summary, df_fifo = load_data_split()
+df_summary, df_fifo = load_all_data()
 
 # ==========================================
-# MODULE 2: THE LOCKED SUMMARY ENGINE
+# 2. THE SUMMARY ENGINE (STRICT LOCKED LOGIC)
 # ==========================================
 def s_if(df_target, target_col, a=None, b=None, c=None, d=None, e=None):
     if df_target.empty: return 0.0
@@ -49,32 +48,101 @@ def s_if(df_target, target_col, a=None, b=None, c=None, d=None, e=None):
     if e: mask &= (df_target['E'].astype(str).str.strip() == e)
     return float(df_target.loc[mask, target_col].sum())
 
+def get_realized_row(df_target, scope):
+    p_st = s_if(df_target, 'F', a="Realized & Unrealized Performance Summary", c=scope)
+    l_st = s_if(df_target, 'G', a="Realized & Unrealized Performance Summary", c=scope)
+    p_lt = s_if(df_target, 'H', a="Realized & Unrealized Performance Summary", c=scope)
+    l_lt = s_if(df_target, 'I', a="Realized & Unrealized Performance Summary", c=scope)
+    return [p_st, l_st, p_lt, l_lt, (p_st + l_st + p_lt + l_lt)]
+
 # ==========================================
-# MODULE 3: UI & TABS
+# 3. UI RENDERING
 # ==========================================
+view_choice = st.sidebar.selectbox("Select Period", ["Lifetime", "FY26", "FY25", "FY24"])
+if view_choice == "Lifetime":
+    df_s_view, df_f_view = df_summary, df_fifo
+else:
+    df_s_view = df_summary[df_summary['YearSource'] == view_choice]
+    df_f_view = df_fifo[df_fifo['YearSource'] == view_choice]
+
 tab1, tab2, tab3 = st.tabs(["📊 Summary", "Current Holdings", "🧮 FIFO Calculator"])
 
 with tab1:
-    st.header("Summary (Locked Instance)")
+    st.header(f"Summary: {view_choice}")
+    
+    # METRICS SECTION
     c1, c2, c3 = st.columns(3)
-    # Using df_summary bucket
-    c1.metric("Total Investment (USD)", f"${s_if(df_summary, 'M', a='Trades', b='Total', d='Stocks', e='USD'):,.2f}")
-    c2.metric("Total Investment (AUD)", f"${s_if(df_summary, 'M', a='Trades', b='Total', d='Stocks', e='AUD'):,.2f}")
-    c3.metric("Funds Deposited (AUD)", f"${s_if(df_summary, 'F', a='Deposits & Withdrawals', c='Total'):,.2f}")
-    # ... Rest of your summary metrics using df_summary ...
+    c1.metric("Total Investment (USD)", f"${s_if(df_s_view, 'M', a='Trades', b='Total', d='Stocks', e='USD'):,.2f}")
+    c2.metric("Total Investment (AUD)", f"${s_if(df_s_view, 'M', a='Trades', b='Total', d='Stocks', e='AUD'):,.2f}")
+    c3.metric("Funds Deposited (AUD)", f"${s_if(df_s_view, 'F', a='Deposits & Withdrawals', c='Total'):,.2f}")
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Dividends (USD)", f"${s_if(df_s_view, 'F', a='Dividends', c='Total'):,.2f}")
+    c4.metric("Dividends (AUD)", f"${s_if(df_s_view, 'F', a='Dividends', c='Total in AUD'):,.2f}")
+    c5.metric("Withholding Tax (USD)", f"${s_if(df_s_view, 'F', a='Withholding Tax', c='Total'):,.2f}")
+    c5.metric("Withholding Tax (AUD)", f"${s_if(df_s_view, 'F', a='Withholding Tax', c='Total in AUD'):,.2f}")
+
+    # REALIZED TABLE SECTION
+    st.divider()
+    st.subheader("Realized Gains/Losses")
+    real_data = {
+        "Metric": ["S/T Profit", "S/T Loss", "L/T Profit", "L/T Loss", "Total"],
+        "Stocks": get_realized_row(df_s_view, "Stocks"),
+        "Forex": get_realized_row(df_s_view, "Forex"),
+        "Total Assets": get_realized_row(df_s_view, "Total (All Assets)")
+    }
+    st.table(pd.DataFrame(real_data).set_index("Metric").style.format("${:,.2f}"))
+
+with tab2:
+    st.header("Open Positions")
+    # Uses df_fifo so ticker names in Col F are visible
+    h_data = df_f_view[(df_f_view['A'].astype(str).str.strip() == "Trades") & 
+                       (df_f_view['B'].astype(str).str.strip() == "Data")]
+    if not h_data.empty:
+        h = h_data.groupby('F').agg({'K': 'sum', 'M': 'sum'}).reset_index()
+        h = h[h['K'] > 0.001]
+        h.columns = ['Ticker', 'Units', 'Cost Basis']
+        st.dataframe(h.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}"}))
 
 with tab3:
-    st.header("FIFO Calculator (Text-Safe Instance)")
-    # Using df_fifo bucket where Column F is still TEXT
-    is_trade = df_fifo['A'].astype(str).str.strip() == "Trades"
-    is_data = df_fifo['B'].astype(str).str.strip() == "Data"
-    fifo_source = df_fifo[is_trade & is_data]
+    st.header("FIFO Sell Calculator")
+    # Uses df_fifo so ticker names in Col F are visible
+    f_data = df_fifo[(df_fifo['A'].astype(str).str.strip() == "Trades") & 
+                     (df_fifo['B'].astype(str).str.strip() == "Data")]
     
-    ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() 
-                         if str(x).strip() not in ['0.0', 'nan', 'None', '']])
+    ticker_list = sorted([str(x).strip() for x in f_data['F'].unique() if str(x).strip() not in ['0.0', 'nan', 'None', '']])
     
     if ticker_list:
         sel_t = st.selectbox("Select Stock", ticker_list)
-        st.success(f"Successfully identified ticker: {sel_t}")
+        # Reconstruct FIFO
+        s_hist = f_data[f_data['F'].astype(str).str.strip() == sel_t].copy()
+        
+        queue = []
+        for _, r in s_hist.iterrows():
+            q, b = float(r['K']), float(r['M'])
+            if q > 0: queue.append({'q': q, 'b': b})
+            elif q < 0:
+                rem = abs(q)
+                while rem > 0 and queue:
+                    if queue[0]['q'] <= rem: rem -= queue.pop(0)['q']
+                    else:
+                        queue[0]['q'] -= rem
+                        rem = 0
+        
+        t_held = sum(i['q'] for i in queue)
+        col_1, col_2 = st.columns(2)
+        profit = col_2.number_input("Target Profit %", value=15.0)
+        amt = col_1.slider("Units", 0.0, float(t_held), step=0.01)
+
+        if amt > 0:
+            temp_q, cost_sum = amt, 0.0
+            for lot in queue:
+                if temp_q <= 0: break
+                take = min(lot['q'], temp_q)
+                cost_sum += (take / lot['q']) * lot['b']
+                temp_q -= take
+            target_v = cost_sum * (1 + (profit/100))
+            st.success(f"### Target Sell Value: ${target_v:,.2f}")
+            st.info(f"Remaining: {t_held - amt:,.4f} units")
     else:
-        st.error("Dropdown still empty. Check Column F in Google Sheets.")
+        st.error("Dropdown still empty. Check Column F in Google Sheets for individual trade rows.")
