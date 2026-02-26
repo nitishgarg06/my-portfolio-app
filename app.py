@@ -105,159 +105,114 @@ with tab2:
         h.columns = ['Ticker', 'Units', 'Cost Basis']
         st.dataframe(h.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}"}))
 
+import datetime
+
 with tab3:
-    st.header("🧮 FIFO Sell Calculator")
+    st.header("🧮 FIFO Sell Calculator & Tax Tracker")
     
-    # 1. Isolate individual trade data
+    # 1. Isolate individual trade data - We include Column D (Date)
     f_data = df_fifo[(df_fifo['A'].astype(str).str.strip().str.upper() == "TRADES") & 
                      (df_fifo['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
     
     f_data['F_Clean'] = f_data['F'].astype(str).str.strip().str.upper()
-    all_tickers = f_data['F_Clean'].unique()
     
-    # --- NEW: FILTER FOR ACTIVE HOLDINGS ONLY ---
+    # Pre-calculate active tickers (only those with current holdings)
     active_tickers = []
-    
+    all_tickers = f_data['F_Clean'].unique()
     for t in all_tickers:
         if t in ['0.0', 'NAN', 'NONE', '', '0']: continue
-        
-        # Quick FIFO check for this ticker
         t_history = f_data[f_data['F_Clean'] == t]
         current_inv = []
         for _, r in t_history.iterrows():
             q = float(r['H'])
-            if q > 0: 
-                current_inv.append(q)
+            if q > 0: current_inv.append(q)
             elif q < 0:
-                rem = abs(q)
+                rem = abs(q); 
                 while rem > 0 and current_inv:
-                    if current_inv[0] <= rem:
-                        rem -= current_inv.pop(0)
-                    else:
-                        current_inv[0] -= rem
-                        rem = 0
-        
-        if sum(current_inv) > 0.001: # Only add if remaining balance is significant
-            active_tickers.append(t)
-    
+                    if current_inv[0] <= rem: rem -= current_inv.pop(0)
+                    else: current_inv[0] -= rem; rem = 0
+        if sum(current_inv) > 0.001: active_tickers.append(t)
+
     ticker_list = sorted(active_tickers)
     
     if ticker_list:
         sel_t = st.selectbox("Select Active Stock to Analyze", ticker_list)
-        
-        # Pull chronological history for this stock
         s_hist = f_data[f_data['F_Clean'] == sel_t].copy()
         
-        # RECONSTRUCT INVENTORY
+        # 2. Reconstruct FIFO Inventory with DATE tracking
         inventory = []
-        
-        # Ensure H (Quantity) and M (Basis) are treated as numbers
-        s_hist['H'] = pd.to_numeric(s_hist['H'], errors='coerce').fillna(0.0)
-        s_hist['M'] = pd.to_numeric(s_hist['M'], errors='coerce').fillna(0.0)
+        # Try to parse dates from Column D (change to E if your dates are there)
+        s_hist['Date_Parsed'] = pd.to_datetime(s_hist['D'], errors='coerce')
+        today = pd.Timestamp(datetime.date(2026, 2, 26))
 
         for _, r in s_hist.iterrows():
-            q = float(r['H'])  # CHANGED FROM K TO H
-            b = float(r['M'])
-            
-            if q > 0.00001:  # BUY
-                inventory.append({'qty': q, 'basis': b, 'price': b/q if q != 0 else 0})
-            elif q < -0.00001:  # SELL
-                qty_to_reduce = abs(q)
-                while qty_to_reduce > 0.00001 and inventory:
-                    if inventory[0]['qty'] <= qty_to_reduce:
-                        qty_to_reduce -= inventory.pop(0)['qty']
-                    else:
-                        inventory[0]['qty'] -= qty_to_reduce
-                        qty_to_reduce = 0
+            q, b, dt = float(r['H']), float(r['M']), r['Date_Parsed']
+            if q > 0.00001:
+                # Determine Tax Status
+                is_long_term = (today - dt).days >= 365 if pd.notnull(dt) else False
+                inventory.append({
+                    'qty': q, 'basis': b, 'date': dt, 
+                    'is_long_term': is_long_term, 'price': b/q if q != 0 else 0
+                })
+            elif q < -0.00001:
+                rem = abs(q)
+                while rem > 0.00001 and inventory:
+                    if inventory[0]['qty'] <= rem: rem -= inventory.pop(0)['qty']
+                    else: inventory[0]['qty'] -= rem; rem = 0
         
-        # Calculate current state
         total_held = sum(i['qty'] for i in inventory)
-        total_basis = sum(i['basis'] for i in inventory)
         
         # --- UI: HOLDING BREAKDOWN ---
-        with st.expander("📊 View Open Buy Lots (FIFO Queue)", expanded=True):
-            if inventory and total_held > 0.0001:
-                st.write(f"Confirmed Holdings: **{total_held:.4f} units**")
+        with st.expander("📊 View Open Buy Lots & Tax Status", expanded=True):
+            if inventory:
                 lots_df = pd.DataFrame(inventory)
-                lots_df.columns = ['Remaining Units', 'Total Cost Basis', 'Cost Price/Unit']
-                st.dataframe(lots_df.style.format({
-                    "Remaining Units": "{:.4f}", 
-                    "Total Cost Basis": "${:,.2f}", 
-                    "Cost Price/Unit": "${:,.2f}"
-                }), use_container_width=True)
-            else:
-                st.warning(f"Calculated holding for {sel_t} is 0.")
-                st.info("If you know you own this stock, check if the 'Quantity' column (K) or 'Ticker' column (F) has typos in your spreadsheet.")
+                lots_df['Status'] = lots_df['is_long_term'].map({True: "🟢 Long Term (>1yr)", False: "🟡 Short Term"})
+                display_df = lots_df[['date', 'qty', 'basis', 'price', 'Status']]
+                display_df.columns = ['Date Bought', 'Units', 'Cost Basis', 'Price/Unit', 'Tax Status']
+                st.table(display_df.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}", "Price/Unit": "${:,.2f}"}))
 
         # --- UI: CALCULATOR ---
         if total_held > 0:
             st.subheader("💰 Calculate Sell Target")
-            
-            # 1. Selection Mode Toggle
             sell_mode = st.radio("Select Sell Mode:", ["By Units", "By Percentage"], horizontal=True)
-            
             c_in1, c_in2 = st.columns([2, 1])
-            max_units = float(total_held)
             
-            # 2. Dynamic Slider Logic
-            if sell_mode == "By Units":
-                amt_to_sell = c_in1.slider("Units to Sell", 0.0, max_units, value=max_units/2, step=0.0001)
-                percent_label = (amt_to_sell / max_units) * 100 if max_units > 0 else 0
-            else:
-                sell_percent = c_in1.slider("Percentage of Holdings to Sell (%)", 0.0, 100.0, value=50.0, step=1.0)
-                amt_to_sell = (sell_percent / 100) * max_units
-                percent_label = sell_percent
-
+            max_units = float(total_held)
+            amt_to_sell = c_in1.slider("Quantity", 0.0, max_units, value=max_units/2, step=0.0001) if sell_mode == "By Units" else (c_in1.slider("Percentage", 0.0, 100.0, 50.0)/100)*max_units
             profit_goal = c_in2.number_input("Target Profit %", value=15.0)
             
             if amt_to_sell > 0:
-                # FIFO Calculation for the specific slice
-                temp_sell_qty = amt_to_sell
-                slice_cost_basis = 0.0
+                temp_q, slice_basis, lt_units = amt_to_sell, 0.0, 0.0
+                for lot in inventory:
+                    if temp_q <= 0: break
+                    take = min(lot['qty'], temp_q)
+                    slice_basis += (take / lot['qty']) * lot['basis']
+                    if lot['is_long_term']: lt_units += take
+                    temp_q -= take
                 
-                # We work on a copy of the inventory to avoid modifying the 'View Open Lots' table
-                calc_inventory = [lot.copy() for lot in inventory]
-                
-                for lot in calc_inventory:
-                    if temp_sell_qty <= 0: break
-                    take = min(lot['qty'], temp_sell_qty)
-                    # Pro-rata basis for this specific lot
-                    slice_cost_basis += (take / lot['qty']) * lot['basis']
-                    temp_sell_qty -= take
-                
-                target_total = slice_cost_basis * (1 + (profit_goal/100))
-                target_per_share = target_total / amt_to_sell
+                target_total = slice_basis * (1 + (profit_goal/100))
                 
                 st.divider()
                 r1, r2, r3 = st.columns(3)
                 r1.metric("Target Total Sale", f"${target_total:,.2f}")
-                r2.metric("Target Price/Unit", f"${target_per_share:,.2f}")
-                r3.metric("Profit Lead", f"${target_total - slice_cost_basis:,.2f}", delta=f"{profit_goal}%")
+                r2.metric("Target Price/Unit", f"${target_total/amt_to_sell:,.2f}")
+                r3.metric("Profit Lead", f"${target_total - slice_basis:,.2f}", delta=f"{profit_goal}%")
                 
-                # --- NEW: REMAINING STOCK PROFILE ---
-                st.subheader("📋 Remaining Position Profile")
+                # TAX SUMMARY
+                st.subheader("📑 Tax Impact of this Sale")
+                lt_pct = (lt_units / amt_to_sell) * 100
+                st.write(f"You are selling **{amt_to_sell:.4f}** units.")
                 
-                rem_qty = max_units - amt_to_sell
-                # Calculate remaining basis (Total original basis - Basis of the sold slice)
-                rem_basis = total_basis - slice_cost_basis
-                rem_avg_price = rem_basis / rem_qty if rem_qty > 0 else 0
-                
-                # Visualizing the impact
-                p1, p2, p3 = st.columns(3)
-                p1.metric("Remaining Units", f"{rem_qty:.4f}")
-                p2.metric("New Avg. Cost Basis", f"${rem_avg_price:,.2f}")
-                p3.metric("Remaining Investment", f"${rem_basis:,.2f}")
-
-                if rem_qty > 0:
-                    st.caption(f"Note: After selling {percent_label:.1f}% of your position, your average cost per unit changes from ${(total_basis/max_units):,.2f} to ${rem_avg_price:,.2f} because the oldest (FIFO) lots were removed.")
+                if lt_pct == 100:
+                    st.success("✅ **Tax Optimized:** 100% of this sale qualifies for the 12-month Capital Gains discount.")
+                elif lt_pct > 0:
+                    st.warning(f"⚠️ **Partial Discount:** {lt_pct:.1f}% ({lt_units:.4f} units) qualify for the discount. The rest are Short Term.")
                 else:
-                    st.info("This sale will fully liquidate your position in this ticker.")
-        else:
-            if st.checkbox("Show Raw Trade Data for Debugging"):
-                st.write(s_hist[['A', 'B', 'F', 'H', 'M']])
+                    st.error("❗ **High Tax Impact:** 100% of this sale is Short Term (held < 12 months).")
 
     else:
-        st.error("No valid tickers identified. Please check Column F.")
+        st.error("No active holdings found.")
+
 
 
 
