@@ -168,11 +168,22 @@ with tab3:
         # --- UI: CALCULATOR ---
         if total_held > 0:
             st.subheader("💰 Calculate Sell Target")
-            c_in1, c_in2 = st.columns([2, 1])
             
-            max_val = float(total_held)
-            # Slider for units to sell
-            amt_to_sell = c_in1.slider("Units to Sell", 0.0, max_val, value=max_val/2, step=0.0001)
+            # 1. Selection Mode Toggle
+            sell_mode = st.radio("Select Sell Mode:", ["By Units", "By Percentage"], horizontal=True)
+            
+            c_in1, c_in2 = st.columns([2, 1])
+            max_units = float(total_held)
+            
+            # 2. Dynamic Slider Logic
+            if sell_mode == "By Units":
+                amt_to_sell = c_in1.slider("Units to Sell", 0.0, max_units, value=max_units/2, step=0.0001)
+                percent_label = (amt_to_sell / max_units) * 100 if max_units > 0 else 0
+            else:
+                sell_percent = c_in1.slider("Percentage of Holdings to Sell (%)", 0.0, 100.0, value=50.0, step=1.0)
+                amt_to_sell = (sell_percent / 100) * max_units
+                percent_label = sell_percent
+
             profit_goal = c_in2.number_input("Target Profit %", value=15.0)
             
             if amt_to_sell > 0:
@@ -180,7 +191,10 @@ with tab3:
                 temp_sell_qty = amt_to_sell
                 slice_cost_basis = 0.0
                 
-                for lot in inventory:
+                # We work on a copy of the inventory to avoid modifying the 'View Open Lots' table
+                calc_inventory = [lot.copy() for lot in inventory]
+                
+                for lot in calc_inventory:
                     if temp_sell_qty <= 0: break
                     take = min(lot['qty'], temp_sell_qty)
                     # Pro-rata basis for this specific lot
@@ -196,14 +210,15 @@ with tab3:
                 r2.metric("Target Price/Unit", f"${target_per_share:,.2f}")
                 r3.metric("Profit Lead", f"${target_total - slice_cost_basis:,.2f}", delta=f"{profit_goal}%")
                 
-                st.caption(f"The cost basis for these {amt_to_sell:.4f} units is ${slice_cost_basis:,.2f}")
+                st.info(f"Summary: Selling **{amt_to_sell:.4f} units** ({percent_label:.1f}% of total).")
+                st.caption(f"Cost basis for this specific slice: ${slice_cost_basis:,.2f}")
         else:
-            # DEBUG: If 0 is found, let's see what the data looks like
             if st.checkbox("Show Raw Trade Data for Debugging"):
-                st.write(s_hist[['A', 'B', 'F', 'K', 'M']])
+                st.write(s_hist[['A', 'B', 'F', 'H', 'M']])
 
     else:
         st.error("No valid tickers identified. Please check Column F.")
+
 
 
 
