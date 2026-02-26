@@ -95,15 +95,53 @@ with tab1:
     st.table(pd.DataFrame(real_data).set_index("Metric").style.format("${:,.2f}"))
 
 with tab2:
-    st.header("Open Positions")
-    # Uses df_fifo so ticker names in Col F are visible
-    h_data = df_f_view[(df_f_view['A'].astype(str).str.strip() == "Trades") & 
-                       (df_f_view['B'].astype(str).str.strip() == "Data")]
+    st.header("🏢 Current Stock Holdings")
+    
+    # 1. Filter for individual trade data rows
+    h_data = df_fifo[(df_fifo['A'].astype(str).str.strip().str.upper() == "TRADES") & 
+                     (df_fifo['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
+    
     if not h_data.empty:
-        h = h_data.groupby('F').agg({'K': 'sum', 'M': 'sum'}).reset_index()
-        h = h[h['K'] > 0.001]
-        h.columns = ['Ticker', 'Units', 'Cost Basis']
-        st.dataframe(h.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}"}))
+        # Clean Tickers
+        h_data['Ticker'] = h_data['F'].astype(str).str.strip().str.upper()
+        
+        # 2. Group by Ticker and sum up the key columns
+        # Column H = Qty, Column M = Investment, Column I = Commissions (assuming I based on previous patterns)
+        # Note: If your commissions are in a different column, change 'I' below.
+        holdings = h_data.groupby('Ticker').agg({
+            'H': 'sum',   # Total Units
+            'M': 'sum',   # Total Cost (including commissions usually)
+            'I': 'sum'    # Total Commissions paid for this ticker
+        }).reset_index()
+
+        # 3. Filter out closed positions (where units are 0)
+        holdings = holdings[holdings['H'] > 0.001]
+
+        # 4. Calculate Derived Metrics
+        holdings['Avg. Buy Price'] = holdings['M'] / holdings['H']
+        
+        # Rename columns for the UI
+        holdings.columns = ['Ticker', 'Units', 'Total Investment', 'Total Commissions', 'Avg. Buy Price']
+        
+        # 5. Display Summary Metrics
+        c1, c2 = st.columns(2)
+        c1.metric("Total Active Positions", len(holdings))
+        c2.metric("Portfolio Cost Basis", f"${holdings['Total Investment'].sum():,.2f}")
+
+        # 6. The Holdings Table
+        st.dataframe(
+            holdings[['Ticker', 'Units', 'Avg. Buy Price', 'Total Investment', 'Total Commissions']]
+            .style.format({
+                "Units": "{:.4f}",
+                "Avg. Buy Price": "${:,.2f}",
+                "Total Investment": "${:,.2f}",
+                "Total Commissions": "${:,.2f}"
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No active trade data found to display holdings.")
 
 with tab3:
     st.header("🧮 FIFO Sell Calculator")
@@ -233,6 +271,7 @@ with tab3:
             st.warning(f"Calculated holding for {sel_t} is 0.")
     else:
         st.error("No active holdings found in individual trade data.")
+
 
 
 
