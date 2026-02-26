@@ -104,10 +104,11 @@ with tab2:
     if not h_data.empty:
         h_data['Ticker'] = h_data['F'].astype(str).str.strip().str.upper()
         
-        # 1. Aggregate Units and Investment (M)
+        # 1. Aggregate and keep the Currency (E)
         holdings = h_data.groupby('Ticker').agg({
             'H': 'sum', 
-            'M': 'sum'
+            'M': 'sum',
+            'E': 'first' 
         }).reset_index()
         
         holdings = holdings[holdings['H'] > 0.001]
@@ -119,12 +120,10 @@ with tab2:
             for t in holdings['Ticker']:
                 try:
                     ticker_obj = yf.Ticker(t)
-                    # Using fast_info or regular info for the current price
                     price = ticker_obj.fast_info['last_price']
                     live_prices[t] = price
                 except:
                     live_prices[t] = 0.0
-            
             holdings['Current Price'] = holdings['Ticker'].map(live_prices)
         
         # 3. Calculate Market Value and P/L
@@ -132,22 +131,31 @@ with tab2:
         holdings['P/L $'] = holdings['Market Value'] - holdings['M']
         holdings['P/L %'] = (holdings['P/L $'] / holdings['M']) * 100
         
-        # 4. Summary Metrics
+        # 4. Smart Currency Labeling
+        # If all stocks are the same currency, we show that. If mixed, we say 'Mixed'.
+        unique_curs = holdings['E'].unique()
+        cur_label = unique_curs[0] if len(unique_curs) == 1 else "Mixed"
+        
+        # 5. Summary Metrics
         total_market_val = holdings['Market Value'].sum()
         total_invested = holdings['M'].sum()
         total_pl = total_market_val - total_invested
         
         m1, m2, m3 = st.columns(3)
-        m1.metric("Portfolio Value", f"${total_market_val:,.2f}")
-        m2.metric("Total Investment", f"${total_invested:,.2f}")
-        m3.metric("Total Unrealized P/L", f"${total_pl:,.2f}", delta=f"{(total_pl/total_invested*100 if total_invested != 0 else 0):.2f}%")
+        m1.metric(f"Portfolio Value ({cur_label})", f"${total_market_val:,.2f}")
+        m2.metric(f"Total Investment ({cur_label})", f"${total_invested:,.2f}")
+        m3.metric(
+            f"Total Unrealized P/L ({cur_label})", 
+            f"${total_pl:,.2f}", 
+            delta=f"{(total_pl/total_invested*100 if total_invested != 0 else 0):.2f}%"
+        )
 
-        # 5. Final Table Output (Restoring the Investment column)
-        # We rename columns here to match your requested terminology
+        # 6. Final Table Output
         display_df = holdings[[
-            'Ticker', 'H', 'Avg. Buy Price', 'M', 
+            'Ticker', 'E', 'H', 'Avg. Buy Price', 'M', 
             'Current Price', 'Market Value', 'P/L $', 'P/L %'
         ]].rename(columns={
+            'E': 'Cur',
             'H': 'Units', 
             'M': 'Total Investment (inc comm.)'
         })
@@ -299,6 +307,7 @@ with tab3:
             st.warning(f"Calculated holding for {sel_t} is 0.")
     else:
         st.error("No active holdings found in individual trade data.")
+
 
 
 
