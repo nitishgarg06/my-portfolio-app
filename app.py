@@ -210,14 +210,31 @@ with tab3:
                 r2.metric("Target Price/Unit", f"${target_per_share:,.2f}")
                 r3.metric("Profit Lead", f"${target_total - slice_cost_basis:,.2f}", delta=f"{profit_goal}%")
                 
-                st.info(f"Summary: Selling **{amt_to_sell:.4f} units** ({percent_label:.1f}% of total).")
-                st.caption(f"Cost basis for this specific slice: ${slice_cost_basis:,.2f}")
+                # --- NEW: REMAINING STOCK PROFILE ---
+                st.subheader("📋 Remaining Position Profile")
+                
+                rem_qty = max_units - amt_to_sell
+                # Calculate remaining basis (Total original basis - Basis of the sold slice)
+                rem_basis = total_basis - slice_cost_basis
+                rem_avg_price = rem_basis / rem_qty if rem_qty > 0 else 0
+                
+                # Visualizing the impact
+                p1, p2, p3 = st.columns(3)
+                p1.metric("Remaining Units", f"{rem_qty:.4f}")
+                p2.metric("New Avg. Cost Basis", f"${rem_avg_price:,.2f}")
+                p3.metric("Remaining Investment", f"${rem_basis:,.2f}")
+
+                if rem_qty > 0:
+                    st.caption(f"Note: After selling {percent_label:.1f}% of your position, your average cost per unit changes from ${(total_basis/max_units):,.2f} to ${rem_avg_price:,.2f} because the oldest (FIFO) lots were removed.")
+                else:
+                    st.info("This sale will fully liquidate your position in this ticker.")
         else:
             if st.checkbox("Show Raw Trade Data for Debugging"):
                 st.write(s_hist[['A', 'B', 'F', 'H', 'M']])
 
     else:
         st.error("No valid tickers identified. Please check Column F.")
+
 
 
 
