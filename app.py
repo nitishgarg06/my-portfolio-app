@@ -110,15 +110,58 @@ with tab2:
 
 with tab3:
     st.header("FIFO Sell Calculator")
-    # This is the section we will diagnose for the empty dropdown
-    st.info("Dropdown Diagnostic Phase")
-    fifo_source = df_all[(df_all['A'].astype(str).str.strip() == "Trades") & (df_all['B'].astype(str).str.strip() == "Data")]
     
-    # We strip and convert to string to ensure no hidden mismatches
-    ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() if str(x).strip() not in ['0.0', 'nan', '0', 'None', '']])
+    # --- STEP 1: THE INSPECTOR (Temporary) ---
+    st.subheader("🔍 Column Inspector")
+    # This shows us exactly what Python sees in the first few 'Trades' rows
+    inspection_df = df_all[df_all['A'].astype(str).str.strip() == "Trades"].head(5)
+    st.write("Current data structure for 'Trades' rows:", inspection_df[['A', 'B', 'F', 'K', 'M']])
+
+    # --- STEP 2: THE FLEXIBLE FILTER ---
+    # We will use 'contains' and case-insensitivity just in case there are hidden characters
+    is_trade = df_all['A'].astype(str).str.contains("Trade", case=False, na=False)
+    is_data = df_all['B'].astype(str).str.contains("Data", case=False, na=False)
+    
+    fifo_source = df_all[is_trade & is_data]
+    
+    # Pull tickers from Column F
+    ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() 
+                         if str(x).strip() not in ['0.0', 'nan', '0', 'None', '']])
     
     if ticker_list:
         sel_t = st.selectbox("Select Stock", ticker_list)
-        st.write(f"Calculating for: {sel_t}")
+        
+        # --- STEP 3: THE FIFO QUEUE ---
+        s_history = fifo_source[fifo_source['F'].astype(str).str.strip() == sel_t].copy()
+        
+        queue = []
+        for _, r in s_history.iterrows():
+            q, b = float(r['K']), float(r['M'])
+            if q > 0: queue.append({'q': q, 'b': b})
+            elif q < 0:
+                rem = abs(q)
+                while rem > 0 and queue:
+                    if queue[0]['q'] <= rem: rem -= queue.pop(0)['q']
+                    else:
+                        queue[0]['q'] -= rem
+                        rem = 0
+        
+        t_held = sum(i['q'] for i in queue)
+        
+        c_in1, c_in2 = st.columns(2)
+        profit_goal = c_in2.number_input("Target Profit %", value=15.0)
+        amt = c_in1.slider("Quantity to Sell", 0.0, float(t_held), step=0.01)
+
+        if amt > 0:
+            temp_q, cost_sum = amt, 0.0
+            for lot in queue:
+                if temp_q <= 0: break
+                take = min(lot['q'], temp_q)
+                cost_sum += (take / lot['q']) * lot['b']
+                temp_q -= take
+            
+            target_val = cost_sum * (1 + (profit_goal/100))
+            st.success(f"### Target Sell Value: ${target_val:,.2f}")
+            st.info(f"Remaining Units: {t_held - amt:,.4f}")
     else:
-        st.warning("Dropdown still empty. Check Column F in your 'Data' rows.")
+        st.error("Dropdown is still empty. Look at the 'Column Inspector' table above. Does Column F show the Ticker Symbol (e.g., TSLA) in the 'Data' rows?")
