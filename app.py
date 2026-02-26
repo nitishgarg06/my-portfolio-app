@@ -26,9 +26,10 @@ def load_all_data():
     for col in ['F', 'G', 'H', 'I', 'K', 'M']:
         df_s[col] = pd.to_numeric(df_s[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
 
-    # --- BUCKET 2: FIFO DATA (Protects Column F Text) ---
+    # --- BUCKET 2: FIFO DATA (Protects Column F Text, but needs H for Qty) ---
     df_f = raw_data.copy()
-    for col in ['K', 'M']: # Only force Units and Total Basis to numbers
+    # We now include 'H' so the calculator can read the Quantity
+    for col in ['H', 'K', 'M']: 
         df_f[col] = pd.to_numeric(df_f[col].astype(str).replace(r'[$,\s()]', '', regex=True), errors='coerce').fillna(0.0)
     
     return df_s, df_f
@@ -126,19 +127,17 @@ with tab3:
         # RECONSTRUCT INVENTORY
         inventory = []
         
-        # We ensure K (Quantity) and M (Basis) are treated as numbers right here
-        s_hist['K'] = pd.to_numeric(s_hist['K'], errors='coerce').fillna(0.0)
+        # Ensure H (Quantity) and M (Basis) are treated as numbers
+        s_hist['H'] = pd.to_numeric(s_hist['H'], errors='coerce').fillna(0.0)
         s_hist['M'] = pd.to_numeric(s_hist['M'], errors='coerce').fillna(0.0)
 
         for _, r in s_hist.iterrows():
-            q = float(r['K'])
+            q = float(r['H'])  # CHANGED FROM K TO H
             b = float(r['M'])
             
-            # Use a tiny epsilon (0.00001) to avoid floating point math errors
-            if q > 0.00001:  # This is a BUY
+            if q > 0.00001:  # BUY
                 inventory.append({'qty': q, 'basis': b, 'price': b/q if q != 0 else 0})
-            
-            elif q < -0.00001:  # This is a SELL
+            elif q < -0.00001:  # SELL
                 qty_to_reduce = abs(q)
                 while qty_to_reduce > 0.00001 and inventory:
                     if inventory[0]['qty'] <= qty_to_reduce:
@@ -205,6 +204,7 @@ with tab3:
 
     else:
         st.error("No valid tickers identified. Please check Column F.")
+
 
 
 
