@@ -111,64 +111,28 @@ with tab2:
 with tab3:
     st.header("FIFO Sell Calculator")
     
-    # --- 1. THE RECOVERY FILTER ---
-    # We look for rows that are 'Trades' but NOT the 'Total' or 'Sub Total' rows
-    # This leaves us with only the individual 'Data' rows
+    # 1. FIND THE TRADES
     is_trade_row = df_all['A'].astype(str).str.strip().str.upper() == "TRADES"
-    is_not_total = ~df_all['B'].astype(str).str.strip().str.upper().str.contains("TOTAL", na=False)
-    
-    # Create the source for FIFO
-    fifo_source = df_all[is_trade_row & is_not_total].copy()
-    
-    # Pull tickers from Column F
-    # We exclude common non-ticker strings
-    ticker_list = sorted([
-        str(x).strip() for x in fifo_source['F'].unique() 
-        if str(x).strip() not in ['0.0', 'nan', '0', 'None', '', 'Symbol', 'Ticker']
-    ])
+    trade_sample = df_all[is_trade_row].copy()
 
-    if ticker_list:
-        sel_t = st.selectbox("Select Stock", ticker_list)
+    if not trade_sample.empty:
+        st.subheader("🔍 Column Mapping Check")
+        st.write("Below are the first 5 'Trades' rows from your sheet. Which column contains the Ticker Symbol?")
+        # Display the raw data so you can see where the ticker is
+        st.table(trade_sample[['A', 'B', 'C', 'D', 'E', 'F', 'G']].head(5))
         
-        # --- 2. CALCULATE FIFO QUEUE ---
-        # Filter for the specific stock selected
-        s_history = fifo_source[fifo_source['F'].astype(str).str.strip() == sel_t].copy()
+        # 2. ATTEMPT TO FIND TICKERS
+        # We will look in F, but also check if they are in C or E by mistake
+        found_tickers = [str(x).strip() for x in trade_sample['F'].unique() if len(str(x).strip()) > 1 and str(x) != '0.0']
         
-        inventory = []
-        for _, r in s_history.iterrows():
-            qty, basis = float(r['K']), float(r['M'])
-            if qty > 0:  # BUY
-                inventory.append({'q': qty, 'b': basis})
-            elif qty < 0:  # SELL (FIFO subtraction)
-                rem_sell = abs(qty)
-                while rem_sell > 0 and inventory:
-                    if inventory[0]['q'] <= rem_sell:
-                        rem_sell -= inventory.pop(0)['q']
-                    else:
-                        inventory[0]['q'] -= rem_sell
-                        rem_sell = 0
-        
-        total_held = sum(i['q'] for i in inventory)
-        
-        # --- 3. CALCULATOR UI ---
-        c_in1, c_in2 = st.columns(2)
-        profit_goal = c_in2.number_input("Target Profit %", value=15.0)
-        amt = c_in1.slider("Units to Sell", 0.0, float(total_held), step=0.01)
-
-        if amt > 0:
-            temp_amt, cost_sum = amt, 0.0
-            for lot in inventory:
-                if temp_amt <= 0: break
-                take = min(lot['q'], temp_amt)
-                cost_sum += (take / lot['q']) * lot['b']
-                temp_amt -= take
-            
-            target_val = cost_sum * (1 + (profit_goal/100))
-            st.success(f"### Target Sell Value: ${target_val:,.2f}")
-            st.info(f"Remaining Units: {total_held - amt:,.4f}")
+        if found_tickers:
+            sel_t = st.selectbox("Select Stock", sorted(found_tickers))
+            st.success(f"Ticker {sel_t} identified in Column F.")
+        else:
+            st.error("Column F appears to be empty for these rows.")
+            st.write("Unique values in Column C:", trade_sample['C'].unique())
+            st.write("Unique values in Column E:", trade_sample['E'].unique())
     else:
-        st.error("No tickers found. Please check if your stock symbols are in Column F.")
-        # Final emergency debug: show the user exactly what is in Column F for Trade rows
-        st.write("Current content of Column F for 'Trades' rows:", df_all[is_trade_row]['F'].unique())
+        st.error("No rows found where Column A = 'Trades'.")
 
 
