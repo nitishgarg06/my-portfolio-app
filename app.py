@@ -119,7 +119,7 @@ with tab3:
         # Pull chronological history for this stock
         s_hist = f_data[f_data['F'].astype(str).str.strip() == sel_t].copy()
         
-        # Build the FIFO Queue and Inventory Tracker
+        # Build the FIFO Queue
         queue = []
         for _, r in s_hist.iterrows():
             q, b = float(r['K']), float(r['M'])
@@ -138,44 +138,47 @@ with tab3:
         
         # --- UI: HOLDING BREAKDOWN ---
         with st.expander("View Current Open Lots"):
-            if queue:
+            if queue and total_held > 0:
                 lots_df = pd.DataFrame(queue)
                 lots_df.columns = ['Remaining Units', 'Total Cost Basis', 'Price per Unit']
                 st.table(lots_df.style.format({"Remaining Units": "{:.4f}", "Total Cost Basis": "${:,.2f}", "Price per Unit": "${:,.2f}"}))
             else:
-                st.write("No open lots found.")
+                st.write("No open lots found for this ticker (Position may be closed).")
 
         # --- UI: CALCULATOR ---
         st.subheader("Simulate a Sale")
-        c_in1, c_in2, c_in3 = st.columns([2, 1, 1])
         
-        amt = c_in1.slider("Units to Sell", 0.0, float(total_held), step=0.01)
-        profit_goal = c_in2.number_input("Target Profit %", value=15.0)
-        
-        if amt > 0:
-            # Calculate cost of the FIFO slice
-            temp_q, cost_sum = amt, 0.0
-            for lot in queue:
-                if temp_q <= 0: break
-                take = min(lot['qty'], temp_q)
-                cost_sum += (take / lot['qty']) * lot['basis']
-                temp_q -= take
+        if total_held > 0:
+            c_in1, c_in2 = st.columns([2, 1])
             
-            target_val = cost_sum * (1 + (profit_goal/100))
-            price_per_share = target_val / amt
+            # THE FIX: Ensure max_value is greater than 0.0 and handle float conversion safely
+            max_val = float(total_held)
+            amt = c_in1.slider("Units to Sell", 0.0, max_val, step=0.01) if max_val > 0 else 0.0
+            profit_goal = c_in2.number_input("Target Profit %", value=15.0)
             
-            st.divider()
-            res1, res2, res3 = st.columns(3)
-            
-            res1.metric("Target Total Sell Value", f"${target_val:,.2f}")
-            res2.metric("Target Price per Share", f"${price_per_share:,.2f}")
-            res3.metric("Estimated Net Profit", f"${target_val - cost_sum:,.2f}", delta=f"{profit_goal}%")
-            
-            st.info(f"**FIFO Logic Note:** These units will be sold from your oldest lots first. The total cost basis for this specific slice of {amt} units is **${cost_sum:,.2f}**.")
-            
-            # Progress bar showing how much of your total holding you are selling
-            st.write(f"Selling **{ (amt/total_held)*100 :.1f}%** of your total {total_held:.4f} units.")
-            st.progress(amt / total_held)
+            if amt > 0:
+                # Calculate cost of the FIFO slice
+                temp_q, cost_sum = amt, 0.0
+                for lot in queue:
+                    if temp_q <= 0: break
+                    take = min(lot['qty'], temp_q)
+                    cost_sum += (take / lot['qty']) * lot['basis']
+                    temp_q -= take
+                
+                target_val = cost_sum * (1 + (profit_goal/100))
+                price_per_share = target_val / amt
+                
+                st.divider()
+                res1, res2, res3 = st.columns(3)
+                res1.metric("Target Total Value", f"${target_val:,.2f}")
+                res2.metric("Target Price / Share", f"${price_per_share:,.2f}")
+                res3.metric("Est. Net Profit", f"${target_val - cost_sum:,.2f}", delta=f"{profit_goal}%")
+                
+                st.progress(amt / max_val)
+                st.caption(f"Selling { (amt/max_val)*100 :.1f}% of holdings. Cost basis for this slice: ${cost_sum:,.2f}")
+        else:
+            st.warning(f"You currently hold 0 units of {sel_t} according to the trade history.")
 
     else:
-        st.error("No valid tickers identified in Column F for trade data rows.")
+        st.error("No valid tickers identified in Column F.")
+
