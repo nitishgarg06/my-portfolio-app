@@ -105,21 +105,45 @@ with tab2:
         h.columns = ['Ticker', 'Units', 'Cost Basis']
         st.dataframe(h.style.format({"Units": "{:.4f}", "Cost Basis": "${:,.2f}"}))
 
-with tab3:
+    with tab3:
     st.header("🧮 FIFO Sell Calculator")
     
     # 1. Isolate individual trade data
     f_data = df_fifo[(df_fifo['A'].astype(str).str.strip().str.upper() == "TRADES") & 
                      (df_fifo['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
     
-    # Clean Tickers in the dataframe to ensure matches
     f_data['F_Clean'] = f_data['F'].astype(str).str.strip().str.upper()
+    all_tickers = f_data['F_Clean'].unique()
     
-    ticker_list = sorted([x for x in f_data['F_Clean'].unique() 
-                         if x not in ['0.0', 'NAN', 'NONE', '', '0']])
+    # --- NEW: FILTER FOR ACTIVE HOLDINGS ONLY ---
+    active_tickers = []
+    
+    for t in all_tickers:
+        if t in ['0.0', 'NAN', 'NONE', '', '0']: continue
+        
+        # Quick FIFO check for this ticker
+        t_history = f_data[f_data['F_Clean'] == t]
+        current_inv = []
+        for _, r in t_history.iterrows():
+            q = float(r['H'])
+            if q > 0: 
+                current_inv.append(q)
+            elif q < 0:
+                rem = abs(q)
+                while rem > 0 and current_inv:
+                    if current_inv[0] <= rem:
+                        rem -= current_inv.pop(0)
+                    else:
+                        current_inv[0] -= rem
+                        rem = 0
+        
+        if sum(current_inv) > 0.001: # Only add if remaining balance is significant
+            active_tickers.append(t)
+    
+    ticker_list = sorted(active_tickers)
     
     if ticker_list:
-        sel_t = st.selectbox("Select Stock to Analyze", ticker_list)
+        sel_t = st.selectbox("Select Active Stock to Analyze", ticker_list)
         
         # Pull chronological history for this stock
         s_hist = f_data[f_data['F_Clean'] == sel_t].copy()
@@ -234,6 +258,7 @@ with tab3:
 
     else:
         st.error("No valid tickers identified. Please check Column F.")
+
 
 
 
