@@ -125,15 +125,22 @@ with tab3:
         
         # RECONSTRUCT INVENTORY
         inventory = []
+        
+        # We ensure K (Quantity) and M (Basis) are treated as numbers right here
+        s_hist['K'] = pd.to_numeric(s_hist['K'], errors='coerce').fillna(0.0)
+        s_hist['M'] = pd.to_numeric(s_hist['M'], errors='coerce').fillna(0.0)
+
         for _, r in s_hist.iterrows():
             q = float(r['K'])
             b = float(r['M'])
             
-            if q > 0:  # This is a BUY
+            # Use a tiny epsilon (0.00001) to avoid floating point math errors
+            if q > 0.00001:  # This is a BUY
                 inventory.append({'qty': q, 'basis': b, 'price': b/q if q != 0 else 0})
-            elif q < 0:  # This is a SELL
+            
+            elif q < -0.00001:  # This is a SELL
                 qty_to_reduce = abs(q)
-                while qty_to_reduce > 0 and inventory:
+                while qty_to_reduce > 0.00001 and inventory:
                     if inventory[0]['qty'] <= qty_to_reduce:
                         qty_to_reduce -= inventory.pop(0)['qty']
                     else:
@@ -198,5 +205,6 @@ with tab3:
 
     else:
         st.error("No valid tickers identified. Please check Column F.")
+
 
 
