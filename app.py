@@ -111,57 +111,33 @@ with tab2:
 with tab3:
     st.header("FIFO Sell Calculator")
     
-    # --- STEP 1: THE INSPECTOR (Temporary) ---
-    st.subheader("🔍 Column Inspector")
-    # This shows us exactly what Python sees in the first few 'Trades' rows
-    inspection_df = df_all[df_all['A'].astype(str).str.strip() == "Trades"].head(5)
-    st.write("Current data structure for 'Trades' rows:", inspection_df[['A', 'B', 'F', 'K', 'M']])
+    # --- 1. THE BRUTE FORCE FINDER ---
+    st.subheader("🔍 Data Map")
+    # This grabs the first 10 rows where Column A is 'Trades'
+    # and shows us columns A, B, and F.
+    raw_trades_sample = df_all[df_all['A'].astype(str).str.strip() == "Trades"].head(10)
+    
+    if not raw_trades_sample.empty:
+        st.write("Here is what Python sees in your 'Trades' rows:")
+        st.table(raw_trades_sample[['A', 'B', 'F', 'K', 'M']])
+        
+        # Check if 'Data' exists in Column B
+        b_values = raw_trades_sample['B'].unique().tolist()
+        st.write(f"Unique values found in Column B for these rows: {b_values}")
+    else:
+        st.error("Python can't find ANY rows where Column A is 'Trades'.")
+        st.write("Unique values available in Column A:", df_all['A'].unique()[:10])
 
-    # --- STEP 2: THE FLEXIBLE FILTER ---
-    # We will use 'contains' and case-insensitivity just in case there are hidden characters
-    is_trade = df_all['A'].astype(str).str.contains("Trade", case=False, na=False)
-    is_data = df_all['B'].astype(str).str.contains("Data", case=False, na=False)
+    # --- 2. THE REPAIR ATTEMPT ---
+    # This filter is now case-insensitive and ignores spaces
+    is_trade = df_all['A'].astype(str).str.strip().str.upper() == "TRADES"
+    is_data = df_all['B'].astype(str).str.strip().str.upper() == "DATA"
     
     fifo_source = df_all[is_trade & is_data]
-    
-    # Pull tickers from Column F
-    ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() 
-                         if str(x).strip() not in ['0.0', 'nan', '0', 'None', '']])
-    
-    if ticker_list:
-        sel_t = st.selectbox("Select Stock", ticker_list)
-        
-        # --- STEP 3: THE FIFO QUEUE ---
-        s_history = fifo_source[fifo_source['F'].astype(str).str.strip() == sel_t].copy()
-        
-        queue = []
-        for _, r in s_history.iterrows():
-            q, b = float(r['K']), float(r['M'])
-            if q > 0: queue.append({'q': q, 'b': b})
-            elif q < 0:
-                rem = abs(q)
-                while rem > 0 and queue:
-                    if queue[0]['q'] <= rem: rem -= queue.pop(0)['q']
-                    else:
-                        queue[0]['q'] -= rem
-                        rem = 0
-        
-        t_held = sum(i['q'] for i in queue)
-        
-        c_in1, c_in2 = st.columns(2)
-        profit_goal = c_in2.number_input("Target Profit %", value=15.0)
-        amt = c_in1.slider("Quantity to Sell", 0.0, float(t_held), step=0.01)
+    ticker_list = sorted([str(x).strip() for x in fifo_source['F'].unique() if str(x).strip() not in ['0.0', 'nan', '0', '']])
 
-        if amt > 0:
-            temp_q, cost_sum = amt, 0.0
-            for lot in queue:
-                if temp_q <= 0: break
-                take = min(lot['q'], temp_q)
-                cost_sum += (take / lot['q']) * lot['b']
-                temp_q -= take
-            
-            target_val = cost_sum * (1 + (profit_goal/100))
-            st.success(f"### Target Sell Value: ${target_val:,.2f}")
-            st.info(f"Remaining Units: {t_held - amt:,.4f}")
+    if ticker_list:
+        sel_t = st.selectbox("Select Stock", ticker_list, key="fifo_select")
+        st.success(f"Ticker {sel_t} selected successfully!")
     else:
-        st.error("Dropdown is still empty. Look at the 'Column Inspector' table above. Does Column F show the Ticker Symbol (e.g., TSLA) in the 'Data' rows?")
+        st.warning("Dropdown is still empty based on 'Trades' + 'Data' filter.")
