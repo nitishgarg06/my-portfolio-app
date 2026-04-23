@@ -169,7 +169,7 @@ with tab2:
                 "Market Value": "${:,.2f}",
                 "P/L $": "${:,.2f}",
                 "P/L %": "{:.2f}%"
-            }).applymap(
+            }).map(
                 lambda x: 'color: #ff4b4b' if isinstance(x, (int, float)) and x < 0 else 'color: #09ab3b' if isinstance(x, (int, float)) and x > 0 else '', 
                 subset=['P/L $', 'P/L %']
             ),
