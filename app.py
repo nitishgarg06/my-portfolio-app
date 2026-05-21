@@ -131,7 +131,7 @@ dropdown_options = ["Lifetime"] + list(reversed(PORTFOLIO_YEARS))
 year_order = {yr: i+1 for i, yr in enumerate(PORTFOLIO_YEARS)}
 year_order["Lifetime"] = 99
 
-tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
+#tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
 
 # Create Tabs
 #year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
