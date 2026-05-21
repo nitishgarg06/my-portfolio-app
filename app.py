@@ -66,10 +66,16 @@ def get_realized_row(df, asset_class):
 # ==========================================
 # 2. FIFO INVENTORY ENGINE
 # ==========================================
-def get_fifo_inventory(df, ticker=None):
+def get_fifo_inventory(df, ticker=None, asset_category=None):
     """Rebuilds the open lots by replaying trade history."""
-    trades = df[(df['A'].astype(str).str.strip().str.upper() == "TRADES") & 
-                (df['B'].astype(str).str.strip().str.upper() == "DATA")]
+    mask = (df['A'].astype(str).str.strip().str.upper() == "TRADES") & \
+           (df['B'].astype(str).str.strip().str.upper() == "DATA")
+    
+    # NEW: Filter by Column D if an asset category is provided
+    if asset_category:
+        mask &= (df['D'].astype(str).str.strip().str.upper() == asset_category.upper())
+        
+    trades = df[mask]
     
     if ticker:
         trades = trades[trades['F'].astype(str).str.strip().str.upper() == ticker.upper()]
@@ -150,54 +156,80 @@ with tab1:
 with tab2:
     st.header("🏢 Current Open Positions")
     
-    # Reconstruct all inventory based on the cumulative view
-    all_inventory = get_fifo_inventory(df_view)
-    holdings_data = []
-    
-    with st.spinner("Fetching Live Market Prices..."):
-        for ticker, lots in all_inventory.items():
-            total_qty = sum(l['qty'] for l in lots)
-            if total_qty > 0.001:
-                total_invested = sum(l['basis'] for l in lots)
-                avg_buy_price = total_invested / total_qty
-                
-                # Fetch live price
-                try:
-                    live_price = yf.Ticker(ticker).fast_info['last_price']
-                except:
+    def render_holdings_table(inventory_data, is_stock=True):
+        holdings_data = []
+        with st.spinner("Processing Holdings..."):
+            for ticker, lots in inventory_data.items():
+                total_qty = sum(l['qty'] for l in lots)
+                if total_qty > 0.001:
+                    total_invested = sum(l['basis'] for l in lots)
+                    avg_buy_price = total_invested / total_qty
+                    
+                    # Only fetch live price for Stocks
                     live_price = 0.0
-                
-                pl_dollar = (total_qty * live_price) - total_invested
-                pl_percent = (pl_dollar / total_invested * 100) if total_invested > 0 else 0
-                
-                holdings_data.append({
-                    "Stock Ticker": ticker,
-                    "Amount Invested (USD)": total_invested,
-                    "Units": total_qty,
-                    "Avg. Buy Price": avg_buy_price,
-                    "Current Price": live_price,
-                    "Profit/Loss (%)": pl_percent,
-                    "Profit/Loss ($)": pl_dollar
-                })
-                
-    if holdings_data:
-        h_df = pd.DataFrame(holdings_data)
-        st.dataframe(
-            h_df.style.format({
-                "Amount Invested (USD)": "${:,.2f}",
+                    if is_stock:
+                        try:
+                            live_price = yf.Ticker(ticker).fast_info['last_price']
+                        except:
+                            live_price = 0.0
+                    
+                    pl_dollar = (total_qty * live_price) - total_invested if is_stock else 0.0
+                    pl_percent = (pl_dollar / total_invested * 100) if (total_invested > 0 and is_stock) else 0.0
+                    
+                    row_data = {
+                        "Symbol": ticker,
+                        "Amount Invested": total_invested,
+                        "Units": total_qty,
+                        "Avg. Buy Price": avg_buy_price,
+                    }
+                    
+                    if is_stock:
+                        row_data.update({
+                            "Current Price": live_price,
+                            "Profit/Loss (%)": pl_percent,
+                            "Profit/Loss ($)": pl_dollar
+                        })
+                        
+                    holdings_data.append(row_data)
+                    
+        if holdings_data:
+            h_df = pd.DataFrame(holdings_data)
+            
+            # Formatting dictionary depending on asset class
+            format_dict = {
+                "Amount Invested": "${:,.2f}",
                 "Units": "{:.4f}",
                 "Avg. Buy Price": "${:,.2f}",
-                "Current Price": "${:,.2f}",
-                "Profit/Loss (%)": "{:,.2f}%",
-                "Profit/Loss ($)": "${:,.2f}"
-            }).map(
-                lambda x: 'color: #ff4b4b' if x < 0 else 'color: #09ab3b' if x > 0 else '', 
-                subset=['Profit/Loss (%)', 'Profit/Loss ($)']
-            ),
-            use_container_width=True, hide_index=True
-        )
-    else:
-        st.info("No open positions found for the selected timeframe.")
+            }
+            if is_stock:
+                format_dict.update({
+                    "Current Price": "${:,.2f}",
+                    "Profit/Loss (%)": "{:,.2f}%",
+                    "Profit/Loss ($)": "${:,.2f}"
+                })
+                
+            styled_df = h_df.style.format(format_dict)
+            
+            if is_stock:
+                styled_df = styled_df.map(
+                    lambda x: 'color: #ff4b4b' if x < 0 else 'color: #09ab3b' if x > 0 else '', 
+                    subset=['Profit/Loss (%)', 'Profit/Loss ($)']
+                )
+                
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No open positions found.")
+
+    # --- RENDER STOCKS ---
+    st.subheader("📈 Stocks")
+    stock_inventory = get_fifo_inventory(df_view, asset_category="Stocks")
+    render_holdings_table(stock_inventory, is_stock=True)
+    
+    # --- RENDER FOREX ---
+    st.divider()
+    st.subheader("💱 Forex")
+    forex_inventory = get_fifo_inventory(df_view, asset_category="Forex")
+    render_holdings_table(forex_inventory, is_stock=False)
 
 # ------------------------------------------
 # TAB 3: FIFO CALCULATOR
@@ -206,7 +238,7 @@ with tab3:
     st.header("🧮 FIFO Scenario Calculator")
     
     # Re-calculate active tickers for the dropdown
-    active_inventory = get_fifo_inventory(df_view)
+    active_inventory = get_fifo_inventory(df_view, asset_category="Stocks")
     active_tickers = [t for t, lots in active_inventory.items() if sum(l['qty'] for l in lots) > 0.001]
     
     if not active_tickers:
