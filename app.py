@@ -11,11 +11,12 @@ st.set_page_config(layout="wide", page_title="IBKR Portfolio Dashboard")
 @st.cache_data(ttl=600)
 def load_and_process_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
-    
-    years = ["FY24", "FY25", "FY26"]
+
+    # When FY27 arrives, just change this to: ["FY24", "FY25", "FY26", "FY27"]
+    PORTFOLIO_YEARS = ["FY24", "FY25", "FY26"]
     all_frames = []
 
-    for yr in years:
+    for yr in PORTFOLIO_YEARS:
         df = conn.read(worksheet=yr)
         if df is not None and not df.empty:
             df = df.iloc[:, :13] 
@@ -120,8 +121,18 @@ st.title("📈 IBKR Portfolio Tracker")
 #current_rank = year_order[view_choice]
 #df_view = df_master[df_master['YearSource'].map(year_order) <= current_rank]
 
+# --- DYNAMIC UI PREP ---
+# 1. Automatically generate the dropdown list (e.g., ["Lifetime", "FY26", "FY25", "FY24"])
+dropdown_options = ["Lifetime"] + list(reversed(PORTFOLIO_YEARS))
+
+# 2. Automatically assign cumulative math values (FY24=1, FY25=2, FY26=3, Lifetime=99)
+year_order = {yr: i+1 for i, yr in enumerate(PORTFOLIO_YEARS)}
+year_order["Lifetime"] = 99
+
+tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
+
 # Create Tabs
-year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
+#year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
 
 # Helper function to draw the tables for Stocks and Forex
 def render_holdings_table(inventory_data, is_stock=True):
@@ -193,7 +204,8 @@ tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calcu
 # TAB 1: SUMMARY & RECENT ACTIVITY
 # ------------------------------------------
 with tab1:
-    view_choice_1 = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"], key="t1_view")
+    # Change the selectbox line to use the dynamic list
+    view_choice_1 = st.selectbox("Select Financial Period (Cumulative)", dropdown_options, key="t1_view")
     df_view_1 = df_master[df_master['YearSource'].map(year_order) <= year_order[view_choice_1]]
     
     st.header(f"Portfolio Summary (Up to {view_choice_1})")
