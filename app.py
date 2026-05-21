@@ -122,6 +122,71 @@ st.title("📈 IBKR Portfolio Tracker")
 
 # Create Tabs
 year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
+
+# Helper function to draw the tables for Stocks and Forex
+def render_holdings_table(inventory_data, is_stock=True):
+    holdings_data = []
+    with st.spinner("Processing Holdings..."):
+        for ticker, lots in inventory_data.items():
+            total_qty = sum(l['qty'] for l in lots)
+            if total_qty > 0.001:
+                total_invested = sum(l['basis'] for l in lots)
+                avg_buy_price = total_invested / total_qty
+                
+                # Only fetch live price for Stocks
+                live_price = 0.0
+                if is_stock:
+                    try:
+                        live_price = yf.Ticker(ticker).fast_info['last_price']
+                    except:
+                        live_price = 0.0
+                
+                pl_dollar = (total_qty * live_price) - total_invested if is_stock else 0.0
+                pl_percent = (pl_dollar / total_invested * 100) if (total_invested > 0 and is_stock) else 0.0
+                
+                row_data = {
+                    "Symbol": ticker,
+                    "Amount Invested": total_invested,
+                    "Units": total_qty,
+                    "Avg. Buy Price": avg_buy_price,
+                }
+                
+                if is_stock:
+                    row_data.update({
+                        "Current Price": live_price,
+                        "Profit/Loss (%)": pl_percent,
+                        "Profit/Loss ($)": pl_dollar
+                    })
+                    
+                holdings_data.append(row_data)
+                
+    if holdings_data:
+        h_df = pd.DataFrame(holdings_data)
+        
+        format_dict = {
+            "Amount Invested": "${:,.2f}",
+            "Units": "{:.4f}",
+            "Avg. Buy Price": "${:,.2f}",
+        }
+        if is_stock:
+            format_dict.update({
+                "Current Price": "${:,.2f}",
+                "Profit/Loss (%)": "{:,.2f}%",
+                "Profit/Loss ($)": "${:,.2f}"
+            })
+            
+        styled_df = h_df.style.format(format_dict)
+        
+        if is_stock:
+            styled_df = styled_df.map(
+                lambda x: 'color: #ff4b4b' if x < 0 else 'color: #09ab3b' if x > 0 else '', 
+                subset=['Profit/Loss (%)', 'Profit/Loss ($)']
+            )
+            
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No open positions found.")
+        
 tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
 
 # ------------------------------------------
