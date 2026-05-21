@@ -113,12 +113,12 @@ df_master = load_and_process_data()
 st.title("📈 IBKR Portfolio Tracker")
 
 # --- GLOBAL FILTER (CUMULATIVE) ---
-view_choice = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"])
+#view_choice = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"])
 year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
 
 # Filter data cumulatively
-current_rank = year_order[view_choice]
-df_view = df_master[df_master['YearSource'].map(year_order) <= current_rank]
+#current_rank = year_order[view_choice]
+#df_view = df_master[df_master['YearSource'].map(year_order) <= current_rank]
 
 # Create Tabs
 tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
@@ -127,7 +127,10 @@ tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calcu
 # TAB 1: SUMMARY
 # ------------------------------------------
 with tab1:
-    st.header(f"Portfolio Summary (Up to {view_choice})")
+    view_choice_1 = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"], key="t1_view")
+    df_view_1 = df_master[df_master['YearSource'].map(year_order) <= year_order[view_choice_1]]
+    
+    st.header(f"Portfolio Summary (Up to {view_choice_1})")
     
     # Top Level Metrics
     c1, c2, c3 = st.columns(3)
@@ -154,6 +157,9 @@ with tab1:
 # TAB 2: MY HOLDINGS
 # ------------------------------------------
 with tab2:
+    view_choice_2 = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"], key="t2_view")
+    df_view_2 = df_master[df_master['YearSource'].map(year_order) <= year_order[view_choice_2]]
+    
     st.header("🏢 Current Open Positions")
     
     def render_holdings_table(inventory_data, is_stock=True):
