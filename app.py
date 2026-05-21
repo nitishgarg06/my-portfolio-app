@@ -3,6 +3,9 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import yfinance as yf
 
+# --- SINGLE SOURCE OF TRUTH FOR YEARS ---
+PORTFOLIO_YEARS = ["FY24", "FY25", "FY26"]
+
 st.set_page_config(layout="wide", page_title="IBKR Portfolio Dashboard")
 
 # ==========================================
@@ -13,7 +16,6 @@ def load_and_process_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
 
     # When FY27 arrives, just change this to: ["FY24", "FY25", "FY26", "FY27"]
-    PORTFOLIO_YEARS = ["FY24", "FY25", "FY26"]
     all_frames = []
 
     for yr in PORTFOLIO_YEARS:
