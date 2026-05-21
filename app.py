@@ -244,7 +244,7 @@ with tab3:
     st.header("🧮 FIFO Scenario Calculator")
     
     # Re-calculate active tickers for the dropdown
-    active_inventory = get_fifo_inventory(df_view, asset_category="Stocks")
+    active_inventory = get_fifo_inventory(df_master, asset_category="Stocks")
     active_tickers = [t for t, lots in active_inventory.items() if sum(l['qty'] for l in lots) > 0.001]
     
     if not active_tickers:
