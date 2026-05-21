@@ -134,22 +134,22 @@ with tab1:
     
     # Top Level Metrics
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Investment (USD)", f"${get_metric(df_view, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD'):,.2f}")
-    c2.metric("Total Investment (AUD)", f"${get_metric(df_view, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD'):,.2f}")
-    c3.metric("Funds Deposited (AUD)", f"${get_metric(df_view, 'F', 'Deposits & Withdrawals', 'Total'):,.2f}")
+    c1.metric("Total Investment (USD)", f"${get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD'):,.2f}")
+    c2.metric("Total Investment (AUD)", f"${get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD'):,.2f}")
+    c3.metric("Funds Deposited (AUD)", f"${get_metric(df_view_1, 'F', 'Deposits & Withdrawals', 'Total'):,.2f}")
 
     c4, c5 = st.columns(2)
-    c4.metric("Dividends (USD)", f"${get_metric(df_view, 'F', 'Dividends', 'Total'):,.2f}")
-    c5.metric("Dividends (AUD)", f"${get_metric(df_view, 'F', 'Dividends', 'Total in AUD'):,.2f}")
+    c4.metric("Dividends (USD)", f"${get_metric(df_view_1, 'F', 'Dividends', 'Total'):,.2f}")
+    c5.metric("Dividends (AUD)", f"${get_metric(df_view_1, 'F', 'Dividends', 'Total in AUD'):,.2f}")
 
     # Realized Gains Table
     st.divider()
     st.subheader("Realized Gains & Losses")
     realized_data = {
         "Metric": ["Short Term Profit", "Short Term Loss", "Long Term Profit", "Long Term Loss", "Net Total"],
-        "Stocks": get_realized_row(df_view, "Stocks"),
-        "Forex": get_realized_row(df_view, "Forex"),
-        "Total Assets": get_realized_row(df_view, "Total (All Assets)")
+        "Stocks": get_realized_row(df_view_1, "Stocks"),
+        "Forex": get_realized_row(df_view_1, "Forex"),
+        "Total Assets": get_realized_row(df_view_1, "Total (All Assets)")
     }
     st.dataframe(pd.DataFrame(realized_data).set_index("Metric").style.format("${:,.2f}"), use_container_width=True)
 
@@ -228,13 +228,13 @@ with tab2:
 
     # --- RENDER STOCKS ---
     st.subheader("📈 Stocks")
-    stock_inventory = get_fifo_inventory(df_view, asset_category="Stocks")
+    stock_inventory = get_fifo_inventory(df_view_2, asset_category="Stocks")
     render_holdings_table(stock_inventory, is_stock=True)
     
     # --- RENDER FOREX ---
     st.divider()
     st.subheader("💱 Forex")
-    forex_inventory = get_fifo_inventory(df_view, asset_category="Forex")
+    forex_inventory = get_fifo_inventory(df_view_2, asset_category="Forex")
     render_holdings_table(forex_inventory, is_stock=False)
 
 # ------------------------------------------
