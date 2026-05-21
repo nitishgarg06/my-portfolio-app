@@ -259,16 +259,22 @@ with tab3:
         st.subheader("1. Configure Sale Amount")
         sell_mode = st.radio("Define sell amount by:", ["Units", "Percentage (%)"], horizontal=True)
         
-        c_amt1, c_amt2 = st.columns([2, 1])
         if sell_mode == "Units":
-            amt_slider = c_amt1.slider("Slider: Units to Sell", 0.0, float(total_units), value=float(total_units)/2, step=0.0001)
-            amt_text = c_amt2.number_input("Exact Units", 0.0, float(total_units), value=amt_slider)
-            units_to_sell = amt_text
-            percent_to_sell = (units_to_sell / total_units) * 100
+            # Streamlit sliders allow manual typing! Just click the number on the right.
+            units_to_sell = st.slider(
+                "Units to Sell (Click the number on the right to type an exact amount):", 
+                0.0, float(total_units), 
+                value=float(total_units)/2, 
+                step=0.0001
+            )
+            percent_to_sell = (units_to_sell / total_units) * 100 if total_units > 0 else 0
         else:
-            pct_slider = c_amt1.slider("Slider: Percentage to Sell", 0.0, 100.0, value=50.0, step=1.0)
-            pct_text = c_amt2.number_input("Exact Percentage (%)", 0.0, 100.0, value=pct_slider)
-            percent_to_sell = pct_text
+            percent_to_sell = st.slider(
+                "Percentage to Sell (%) (Click the number on the right to type an exact amount):", 
+                0.0, 100.0, 
+                value=50.0, 
+                step=1.0
+            )
             units_to_sell = (percent_to_sell / 100) * total_units
 
         # UI: Target Mode
