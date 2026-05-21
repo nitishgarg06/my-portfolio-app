@@ -114,17 +114,18 @@ st.title("📈 IBKR Portfolio Tracker")
 
 # --- GLOBAL FILTER (CUMULATIVE) ---
 #view_choice = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"])
-year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
+#year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
 
 # Filter data cumulatively
 #current_rank = year_order[view_choice]
 #df_view = df_master[df_master['YearSource'].map(year_order) <= current_rank]
 
 # Create Tabs
+year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
 tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
 
 # ------------------------------------------
-# TAB 1: SUMMARY
+# TAB 1: SUMMARY & RECENT ACTIVITY
 # ------------------------------------------
 with tab1:
     view_choice_1 = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"], key="t1_view")
@@ -153,98 +154,68 @@ with tab1:
     }
     st.dataframe(pd.DataFrame(realized_data).set_index("Metric").style.format("${:,.2f}"), use_container_width=True)
 
+    # --- RECENT ACTIVITY (ALWAYS LIFETIME) ---
+    st.divider()
+    st.subheader("Recent Trade Activity (Last 5 Trades)")
+    
+    # Isolate trades from the MASTER dataframe to ignore the dropdown
+    all_trades = df_master[(df_master['A'].astype(str).str.strip().str.upper() == "TRADES") & 
+                           (df_master['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
+    
+    if not all_trades.empty:
+        # Sort by date descending and grab the top 5
+        recent_5 = all_trades.sort_values(by='Trade_Date', ascending=False).head(5)
+        
+        # Format a clean table for display
+        activity_df = pd.DataFrame({
+            "Date": recent_5['Trade_Date'].dt.strftime('%Y-%m-%d'),
+            "Action": recent_5['H'].apply(lambda x: "BUY" if float(x) > 0 else "SELL"),
+            "Ticker": recent_5['F'],
+            "Units": recent_5['H'].astype(float).abs(),
+            "Total Value": recent_5['M'].astype(float).abs()
+        })
+        
+        st.dataframe(
+            activity_df.style.format({
+                "Units": "{:.4f}",
+                "Total Value": "${:,.2f}"
+            }).map(
+                lambda x: 'color: #09ab3b' if x == "BUY" else 'color: #ff4b4b',
+                subset=["Action"]
+            ),
+            use_container_width=True, hide_index=True
+        )
+    else:
+        st.info("No recent trades found.")
+
 # ------------------------------------------
-# TAB 2: MY HOLDINGS
+# TAB 2: MY HOLDINGS (LIFETIME ONLY)
 # ------------------------------------------
 with tab2:
-    view_choice_2 = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"], key="t2_view")
-    df_view_2 = df_master[df_master['YearSource'].map(year_order) <= year_order[view_choice_2]]
-    
     st.header("🏢 Current Open Positions")
     
-    def render_holdings_table(inventory_data, is_stock=True):
-        holdings_data = []
-        with st.spinner("Processing Holdings..."):
-            for ticker, lots in inventory_data.items():
-                total_qty = sum(l['qty'] for l in lots)
-                if total_qty > 0.001:
-                    total_invested = sum(l['basis'] for l in lots)
-                    avg_buy_price = total_invested / total_qty
-                    
-                    # Only fetch live price for Stocks
-                    live_price = 0.0
-                    if is_stock:
-                        try:
-                            live_price = yf.Ticker(ticker).fast_info['last_price']
-                        except:
-                            live_price = 0.0
-                    
-                    pl_dollar = (total_qty * live_price) - total_invested if is_stock else 0.0
-                    pl_percent = (pl_dollar / total_invested * 100) if (total_invested > 0 and is_stock) else 0.0
-                    
-                    row_data = {
-                        "Symbol": ticker,
-                        "Amount Invested": total_invested,
-                        "Units": total_qty,
-                        "Avg. Buy Price": avg_buy_price,
-                    }
-                    
-                    if is_stock:
-                        row_data.update({
-                            "Current Price": live_price,
-                            "Profit/Loss (%)": pl_percent,
-                            "Profit/Loss ($)": pl_dollar
-                        })
-                        
-                    holdings_data.append(row_data)
-                    
-        if holdings_data:
-            h_df = pd.DataFrame(holdings_data)
-            
-            # Formatting dictionary depending on asset class
-            format_dict = {
-                "Amount Invested": "${:,.2f}",
-                "Units": "{:.4f}",
-                "Avg. Buy Price": "${:,.2f}",
-            }
-            if is_stock:
-                format_dict.update({
-                    "Current Price": "${:,.2f}",
-                    "Profit/Loss (%)": "{:,.2f}%",
-                    "Profit/Loss ($)": "${:,.2f}"
-                })
-                
-            styled_df = h_df.style.format(format_dict)
-            
-            if is_stock:
-                styled_df = styled_df.map(
-                    lambda x: 'color: #ff4b4b' if x < 0 else 'color: #09ab3b' if x > 0 else '', 
-                    subset=['Profit/Loss (%)', 'Profit/Loss ($)']
-                )
-                
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No open positions found.")
-
     # --- RENDER STOCKS ---
     st.subheader("📈 Stocks")
-    stock_inventory = get_fifo_inventory(df_view_2, asset_category="Stocks")
+    # Changed from df_view to df_master so it ALWAYS uses lifetime data
+    stock_inventory = get_fifo_inventory(df_master, asset_category="Stocks")
     render_holdings_table(stock_inventory, is_stock=True)
     
     # --- RENDER FOREX ---
     st.divider()
     st.subheader("💱 Forex")
-    forex_inventory = get_fifo_inventory(df_view_2, asset_category="Forex")
+    forex_inventory = get_fifo_inventory(df_master, asset_category="Forex")
     render_holdings_table(forex_inventory, is_stock=False)
 
 # ------------------------------------------
-# TAB 3: FIFO CALCULATOR
+# TAB 3: FIFO CALCULATOR (LIFETIME ONLY)
 # ------------------------------------------
 with tab3:
     st.header("🧮 FIFO Scenario Calculator")
     
-    # Re-calculate active tickers for the dropdown
+    # Using df_master here as well to ensure total accuracy
     active_inventory = get_fifo_inventory(df_master, asset_category="Stocks")
+    
+    # ... (Keep the rest of your Tab 3 Calculator code exactly as it is) ...
     active_tickers = [t for t, lots in active_inventory.items() if sum(l['qty'] for l in lots) > 0.001]
     
     if not active_tickers:
