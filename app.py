@@ -10,22 +10,17 @@ st.set_page_config(layout="wide", page_title="IBKR Portfolio Dashboard")
 # ==========================================
 @st.cache_data(ttl=600)
 def load_and_process_data():
-    # Connect to Google Sheets
     conn = st.connection("gsheets", type=GSheetsConnection)
     
     years = ["FY24", "FY25", "FY26"]
     all_frames = []
 
-    # Fetch and label each sheet
     for yr in years:
         df = conn.read(worksheet=yr)
         if df is not None and not df.empty:
-            df = df.iloc[:, :13] # Standard IBKR Flex Query width
-            # Standardize columns to letters for reliable referencing
+            df = df.iloc[:, :13] 
             df.columns = list("ABCDEFGHIJKLM") 
             df['YearSource'] = yr
-            
-            # Try to parse trade dates (Column D is usually Date/Time)
             df['Trade_Date'] = pd.to_datetime(df['G'], errors='coerce')
             all_frames.append(df)
     
@@ -34,19 +29,19 @@ def load_and_process_data():
 
     full_df = pd.concat(all_frames, ignore_index=True)
 
-    # Clean numeric columns (H = Quantity, M = Proceeds/Basis/Amount, F = Amounts/Tickers)
-    for col in ['F', 'G', 'H', 'I', 'K', 'M']:
+    # FIX: Only clean H (Quantity) and M (Amount) here. 
+    # We leave F alone so your Ticker symbols aren't deleted!
+    for col in ['H', 'M']:
         if col in full_df.columns:
             full_df[col] = pd.to_numeric(
                 full_df[col].astype(str).replace(r'[$,\s()]', '', regex=True), 
                 errors='coerce'
             ).fillna(0.0)
     
-    # Sort chronologically to ensure FIFO logic works perfectly
     full_df = full_df.sort_values('Trade_Date').reset_index(drop=True)
     return full_df
 
-# Helper function to extract summary metrics based on IBKR row structure
+# Helper function to extract summary metrics
 def get_metric(df, col_to_sum, col_A, col_B=None, col_C=None, col_D=None, col_E=None):
     if df.empty: return 0.0
     mask = (df['A'].astype(str).str.strip() == col_A)
@@ -54,10 +49,14 @@ def get_metric(df, col_to_sum, col_A, col_B=None, col_C=None, col_D=None, col_E=
     if col_C: mask &= (df['C'].astype(str).str.strip() == col_C)
     if col_D: mask &= (df['D'].astype(str).str.strip() == col_D)
     if col_E: mask &= (df['E'].astype(str).str.strip() == col_E)
-    return float(df.loc[mask, col_to_sum].sum())
+    
+    # FIX: Convert to numbers ON THE FLY just for this calculation
+    target_data = df.loc[mask, col_to_sum].astype(str).replace(r'[$,\s()]', '', regex=True)
+    numeric_data = pd.to_numeric(target_data, errors='coerce').fillna(0.0)
+    
+    return float(numeric_data.sum())
 
 def get_realized_row(df, asset_class):
-    # Short/Long Term metrics typically sit in F, G, H, I columns in the Performance Summary
     st_prof = get_metric(df, 'F', "Realized & Unrealized Performance Summary", col_C=asset_class)
     st_loss = get_metric(df, 'G', "Realized & Unrealized Performance Summary", col_C=asset_class)
     lt_prof = get_metric(df, 'H', "Realized & Unrealized Performance Summary", col_C=asset_class)
