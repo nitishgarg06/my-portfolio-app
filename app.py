@@ -254,7 +254,7 @@ with tab1:
             # Print as a bullet point using Streamlit Markdown
             st.markdown(
                 f"* {action} **{units:.4f}** {unit_word} of **{ticker}** on {date_str} "
-                f"for a total value of **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)."
+                f"for a total value of **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)."
             )
     else:
         st.info("No recent stock trades found.")
