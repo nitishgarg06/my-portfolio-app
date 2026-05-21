@@ -219,39 +219,45 @@ with tab1:
     }
     st.dataframe(pd.DataFrame(realized_data).set_index("Metric").style.format("${:,.2f}"), use_container_width=True)
 
-    # --- RECENT ACTIVITY (ALWAYS LIFETIME) ---
+    # --- RECENT ACTIVITY (ALWAYS LIFETIME, STOCKS ONLY) ---
     st.divider()
-    st.subheader("Recent Trade Activity (Last 5 Trades)")
+    st.subheader("Recent Trade Activity (Last 5 Stock Trades)")
     
-    # Isolate trades from the MASTER dataframe to ignore the dropdown
-    all_trades = df_master[(df_master['A'].astype(str).str.strip().str.upper() == "TRADES") & 
-                           (df_master['B'].astype(str).str.strip().str.upper() == "DATA")].copy()
+    # Isolate STOCKS trades from the MASTER dataframe
+    stock_trades = df_master[
+        (df_master['A'].astype(str).str.strip().str.upper() == "TRADES") & 
+        (df_master['B'].astype(str).str.strip().str.upper() == "DATA") &
+        (df_master['D'].astype(str).str.strip().str.upper() == "STOCKS")
+    ].copy()
     
-    if not all_trades.empty:
+    if not stock_trades.empty:
         # Sort by date descending and grab the top 5
-        recent_5 = all_trades.sort_values(by='Trade_Date', ascending=False).head(5)
+        recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
-        # Format a clean table for display
-        activity_df = pd.DataFrame({
-            "Date": recent_5['Trade_Date'].dt.strftime('%Y-%m-%d'),
-            "Action": recent_5['H'].apply(lambda x: "BUY" if float(x) > 0 else "SELL"),
-            "Ticker": recent_5['F'],
-            "Units": recent_5['H'].astype(float).abs(),
-            "Total Value": recent_5['M'].astype(float).abs()
-        })
-        
-        st.dataframe(
-            activity_df.style.format({
-                "Units": "{:.4f}",
-                "Total Value": "${:,.2f}"
-            }).map(
-                lambda x: 'color: #09ab3b' if x == "BUY" else 'color: #ff4b4b',
-                subset=["Action"]
-            ),
-            use_container_width=True, hide_index=True
-        )
+        for _, row in recent_5.iterrows():
+            # Format date to match your requested style (e.g., 17/Apr/2026)
+            date_str = row['Trade_Date'].strftime('%d/%b/%Y')
+            ticker = str(row['F']).strip()
+            
+            # Grab raw numbers
+            raw_units = float(row['H'])
+            raw_value = float(row['M'])
+            
+            # Clean up for the English sentence (we want positive numbers for reading)
+            action = "Bought" if raw_units > 0 else "Sold"
+            units = abs(raw_units)
+            total_val = abs(raw_value)
+            avg_price = total_val / units if units > 0 else 0.0
+            
+            unit_word = "unit" if units == 1.0 else "units"
+            
+            # Print as a bullet point using Streamlit Markdown
+            st.markdown(
+                f"* {action} **{units:.4f}** {unit_word} of **{ticker}** on {date_str} "
+                f"for a total value of **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)."
+            )
     else:
-        st.info("No recent trades found.")
+        st.info("No recent stock trades found.")
 
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
