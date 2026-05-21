@@ -26,7 +26,7 @@ def load_and_process_data():
             df['YearSource'] = yr
             
             # Try to parse trade dates (Column D is usually Date/Time)
-            df['Trade_Date'] = pd.to_datetime(df['D'], errors='coerce')
+            df['Trade_Date'] = pd.to_datetime(df['G'], errors='coerce')
             all_frames.append(df)
     
     if not all_frames:
