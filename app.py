@@ -23,7 +23,7 @@ def load_and_process_data():
         df = conn.read(worksheet=yr)
         if df is not None and not df.empty:
             df = df.iloc[:, :13] 
-            df.columns = list("ABCDEFGHIJKLM") 
+            df.columns = list("ABCDEFGHIJKLMNOPQ") 
             df['YearSource'] = yr
             df['Trade_Date'] = pd.to_datetime(df['G'], errors='coerce')
             all_frames.append(df)
