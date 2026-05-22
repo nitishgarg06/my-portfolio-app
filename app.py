@@ -292,7 +292,7 @@ with tab1:
         # Sort by date descending and grab the top 5
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
-    for _, row in recent_5.iterrows():
+        for _, row in recent_5.iterrows():
             # Format date to match your requested style
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
@@ -307,7 +307,7 @@ with tab1:
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
             
-            # --- THE NEW FRACTIONAL CHECK ---
+            # --- THE FRACTIONAL CHECK ---
             if units.is_integer():
                 formatted_units = f"{int(units)}"
             else:
@@ -321,6 +321,7 @@ with tab1:
                 f"for a total value of **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)."
             )
     else:
+        # This must align exactly with the "if not stock_trades.empty:" line above!
         st.info("No recent stock trades found.")
 
 # --- DIAGNOSTIC X-RAY ---
