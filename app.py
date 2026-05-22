@@ -15,22 +15,24 @@ st.set_page_config(layout="wide", page_title="IBKR Portfolio Dashboard")
 @st.cache_data(ttl=600)
 def load_and_process_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
-
-    # When FY27 arrives, just change this to: ["FY24", "FY25", "FY26", "FY27"]
     all_frames = []
 
     for yr in PORTFOLIO_YEARS:
-        # 1. Force the Google Sheets connection to read 26 columns right from the start
-        df = conn.read(
-            worksheet=yr, 
-            header=None, 
-            names=list("ABCDEFGHIJKLMN")
-        )
+        # 1. Read the sheet normally (Safest method)
+        df = conn.read(worksheet=yr)
         
         if df is not None and not df.empty:
-            # 2. DELETE the `df.iloc[:, :13]` line (so we stop chopping off columns)
-            # 3. DELETE the `df.columns = ...` line (since we already named them in conn.read)
+            # 2. Get the alphabet A through Z
+            col_letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            current_col_count = len(df.columns)
             
+            # 3. Rename whatever columns it found to A, B, C, etc.
+            df.columns = col_letters[:current_col_count]
+            
+            # 4. Safely add the missing columns (including N!) as blanks so the math never crashes
+            for letter in col_letters[current_col_count:]:
+                df[letter] = pd.NA
+                
             df['YearSource'] = yr
             df['Trade_Date'] = pd.to_datetime(df['G'], errors='coerce')
             all_frames.append(df)
@@ -40,8 +42,6 @@ def load_and_process_data():
 
     full_df = pd.concat(all_frames, ignore_index=True)
 
-    # FIX: Only clean H (Quantity) and M (Amount) here. 
-    # We leave F alone so your Ticker symbols aren't deleted!
     for col in ['H', 'M']:
         if col in full_df.columns:
             full_df[col] = pd.to_numeric(
