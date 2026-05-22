@@ -20,10 +20,17 @@ def load_and_process_data():
     all_frames = []
 
     for yr in PORTFOLIO_YEARS:
-        df = conn.read(worksheet=yr)
+        # 1. Force the Google Sheets connection to read 26 columns right from the start
+        df = conn.read(
+            worksheet=yr, 
+            header=None, 
+            names=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        )
+        
         if df is not None and not df.empty:
-            df = df.iloc[:, :13] 
-            df.columns = list("ABCDEFGHIJKLMNOPQ") 
+            # 2. DELETE the `df.iloc[:, :13]` line (so we stop chopping off columns)
+            # 3. DELETE the `df.columns = ...` line (since we already named them in conn.read)
+            
             df['YearSource'] = yr
             df['Trade_Date'] = pd.to_datetime(df['G'], errors='coerce')
             all_frames.append(df)
