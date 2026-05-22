@@ -80,6 +80,15 @@ def get_realized_row(df, asset_class):
     
     return [st_prof, st_loss, lt_prof, lt_loss, (st_prof + st_loss + lt_prof + lt_loss)]
 
+# --- DIAGNOSTIC X-RAY ---
+    st.divider()
+    st.subheader("🕵️ Debugging: Raw Realized Performance Data")
+    debug_df = df_view_1[
+        (df_view_1['A'].astype(str).str.strip().str.upper() == "REALIZED & UNREALIZED PERFORMANCE SUMMARY") &
+        (df_view_1['C'].astype(str).str.strip().str.upper() == "STOCKS")
+    ]
+    st.dataframe(debug_df, use_container_width=True)
+
 # ==========================================
 # 2. FIFO INVENTORY ENGINE
 # ==========================================
