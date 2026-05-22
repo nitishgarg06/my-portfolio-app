@@ -343,56 +343,12 @@ with tab1:
     
     if not stock_trades.empty:
         stock_trades = stock_trades.sort_values(by='Trade_Date')
-        
-        # --- UPGRADED FIFO HELPER FUNCTION ---
-        def get_term_breakdown(target_ticker, target_sell_date, df_all_trades):
-            """Returns the exact number of ST and LT units sold in this transaction."""
-            history = df_all_trades[
-                (df_all_trades['F'].str.strip() == target_ticker) & 
-                (df_all_trades['Trade_Date'] <= target_sell_date)
-            ]
-            
-            buy_queue = []
-            st_units_sold = 0.0
-            lt_units_sold = 0.0
-            
-            for _, row in history.iterrows():
-                units = float(row['H'])
-                trade_date = row['Trade_Date']
-                
-                if units > 0:
-                    buy_queue.append({'date': trade_date, 'units': units})
-                elif units < 0:
-                    sell_qty = abs(units)
-                    is_target_sell = (trade_date == target_sell_date)
-                    
-                    while sell_qty > 0 and buy_queue:
-                        lot = buy_queue[0]
-                        if lot['units'] <= sell_qty:
-                            sell_qty -= lot['units']
-                            if is_target_sell:
-                                days_held = (target_sell_date - lot['date']).days
-                                if days_held >= 365:
-                                    lt_units_sold += lot['units']
-                                else:
-                                    st_units_sold += lot['units']
-                            buy_queue.pop(0)
-                        else:
-                            lot['units'] -= sell_qty
-                            if is_target_sell:
-                                days_held = (target_sell_date - lot['date']).days
-                                if days_held >= 365:
-                                    lt_units_sold += sell_qty
-                                else:
-                                    st_units_sold += sell_qty
-                            sell_qty = 0
-                            
-            return st_units_sold, lt_units_sold
-
-        # Render the dashboard list
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
-        for _, row in recent_5.iterrows():
+        # 1. Initialize an empty string to accumulate all our trade text rows
+        container_html = ""
+        
+        for i, (_, row) in enumerate(recent_5.iterrows()):
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
             
@@ -404,49 +360,57 @@ with tab1:
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
             
-            if units.is_integer():
-                formatted_units = f"{int(units)}"
-            else:
-                formatted_units = f"{units:.4f}"
-            
+            formatted_units = f"{int(units)}" if units.is_integer() else f"{units:.4f}"
             icon = "📈" if action == "BOUGHT" else "📉"
-            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
+            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)"
             
+            # Construct the text block for this specific trade
+            trade_text = f"{base_text}"
             if action == "SOLD":
-                # Assuming 'N' is your correct Realized P/L column based on our previous step!
                 realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
-                # Fetch the exact breakdown of units
                 st_units, lt_units = get_term_breakdown(ticker, row['Trade_Date'], stock_trades)
-                
-                # Format fractions for clean display
                 st_display = f"{int(st_units)}" if st_units.is_integer() else f"{st_units:.4f}"
                 lt_display = f"{int(lt_units)}" if lt_units.is_integer() else f"{lt_units:.4f}"
                 
-                # Determine how to display the text based on the breakdown
                 if st_units > 0 and lt_units > 0:
-                    # The Split Scenario (No more "Mixed Term"!)
-                    st.markdown(
-                        f"{base_text}<br>"
-                        f"↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**<br>"
+                    trade_text += (
+                        f"<br>↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**<br>"
                         f"&nbsp;&nbsp;&nbsp;&nbsp;• *{lt_display} units Long Term*<br>"
-                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term*",
-                        unsafe_allow_html=True
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term*"
                     )
                 elif lt_units > 0:
-                    # 100% Long Term
-                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                    trade_text += f"<br>↳ *Long Term {pl_type}:* **${abs(realized_pl):,.2f}**"
                 elif st_units > 0:
-                    # 100% Short Term
-                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                    trade_text += f"<br>↳ *Short Term {pl_type}:* **${abs(realized_pl):,.2f}**"
                 else:
-                    # Fallback
-                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                    trade_text += f"<br>↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**"
+            
+            # Append this trade text to our master container string, with spacing between items
+            # We use a horizontal rule `<hr>` inside the container except for the very last item
+            if i < len(recent_5) - 1:
+                container_html += f"{trade_text}<br><br><hr style='border:0; border-top: 1px dashed #e0e0e0; margin: 10px 0;'><br>"
             else:
-                st.markdown(base_text, unsafe_allow_html=True)
-                
-            st.write("") 
+                container_html += f"{trade_text}"
+        
+        # 2. Render the accumulated text inside a single custom HTML "TextBox"
+        # Background color #f8f9fa is a soft, professional light grey/white off-tone
+        st.markdown(
+            f"""
+            <div style="
+                background-color: #f8f9fa; 
+                padding: 20px; 
+                border-radius: 8px; 
+                font-size: 14px; 
+                line-height: 1.6;
+                color: #212529;
+            ">
+                {container_html}
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
     else:
         st.info("No recent stock trades found.")
 
