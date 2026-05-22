@@ -326,7 +326,7 @@ with tab1:
             raw_value = float(row['M'])
             
             # Clean up for the English sentence
-            action = "Bought" if raw_units > 0 else "Sold"
+            action = "BOUGHT" if raw_units > 0 else "SOLD"
             units = abs(raw_units)
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
@@ -336,16 +336,28 @@ with tab1:
                 formatted_units = f"{int(units)}"
             else:
                 formatted_units = f"{units:.4f}"
-                
-            unit_word = "unit" if units == 1.0 else "units"
+
+            # Construct the base text that applies to BOTH Buys and Sells
+            icon = "📈" if action == "BOUGHT" else "📉"
+            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
             
-            # Print as a bullet point using Streamlit Markdown
-            st.markdown(
-                f"* {action} **{formatted_units}** {unit_word} of **{ticker}** on {date_str} "
-                f"for a total value of **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)."
-            )
+            # Check if it's a Sell to add the P/L line!
+            if action == "SOLD":
+                # Note: Adjust 'O' if your Realized P/L is in a different column!
+                realized_pl_val = row.get('O', 0)
+                realized_pl = float(pd.to_numeric(realized_pl_val, errors='coerce'))
+                pl_type = "Profit" if realized_pl >= 0 else "Loss"
+                
+                st.markdown(
+                    f"{base_text}<br>↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**",
+                    unsafe_allow_html=True
+                )
+            else:
+                # Standard Buy display
+                st.markdown(base_text, unsafe_allow_html=True)
+                
+            st.write("") # Adds a tiny spacer between items
     else:
-        # This must align exactly with the "if not stock_trades.empty:" line above!
         st.info("No recent stock trades found.")
 
     # --- RECENT SELL ACTIVITY WITH P/L ---
