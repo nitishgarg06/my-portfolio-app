@@ -269,15 +269,37 @@ with tab1:
     # (Your Realized Gains table code stays exactly the same here, it will automatically use the df_single_year we defined above!)
 
     # Realized Gains Table
+# Realized Gains Table
     st.divider()
     st.subheader(gains_title)
+    
     realized_data = {
         "Metric": ["Short Term Profit", "Short Term Loss", "Long Term Profit", "Long Term Loss", "Net Total"],
         "Stocks": get_realized_row(df_single_year, "Stocks"),
         "Forex": get_realized_row(df_single_year, "Forex"),
         "Total Assets": get_realized_row(df_single_year, "Total (All Assets)")
     }
-    st.dataframe(pd.DataFrame(realized_data).set_index("Metric").style.format("${:,.2f}"), use_container_width=True)
+    
+    # 1. Define our traffic light color rules
+    def color_gains_losses(val):
+        if isinstance(val, (int, float)):
+            if val > 0:
+                return 'color: #28a745;' # Financial Green
+            elif val < 0:
+                return 'color: #dc3545;' # Financial Red
+            else:
+                return 'color: #6c757d;' # Neutral Grey
+        return ''
+
+    # 2. Build the table, apply the $ formatting, AND apply the new colors
+    df_realized = pd.DataFrame(realized_data).set_index("Metric")
+    
+    st.dataframe(
+        df_realized.style
+        .format("${:,.2f}")
+        .map(color_gains_losses), # This line paints the cells!
+        use_container_width=True
+    )
 
     # --- RECENT ACTIVITY (ALWAYS LIFETIME, STOCKS ONLY) ---
     st.divider()
