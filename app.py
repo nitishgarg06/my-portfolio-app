@@ -380,7 +380,7 @@ with tab2:
     st.dataframe(debug_positions)
     
     
-    # --- PORTFOLIO ALLOCATION CHART ---
+    # --- PORTFOLIO ALLOCATION CHARTS (SIDE-BY-SIDE) ---
     st.divider()
     st.subheader("📊 Portfolio Allocation")
     
@@ -394,32 +394,50 @@ with tab2:
     ].copy()
     
     if not df_positions.empty:
-        # Assuming Ticker is in Col F and Invested Value is in Col J
-        # (We may need to adjust these letters based on your specific IBKR layout!)
-        chart_data = df_positions[['F', 'J']].copy() 
-        chart_data.columns = ['Ticker', 'Invested']
+        # Pull Ticker (Col F), Invested Value (Col J), and Current Market Value (Col M)
+        chart_data = df_positions[['F', 'J', 'M']].copy() 
+        chart_data.columns = ['Ticker', 'Invested', 'Current_Value']
         
-        # Convert values to numbers and filter out $0 positions
+        # Convert values to numbers and fill missing ones with 0
         chart_data['Invested'] = pd.to_numeric(chart_data['Invested'], errors='coerce').fillna(0)
-        chart_data = chart_data[chart_data['Invested'] > 0]
+        chart_data['Current_Value'] = pd.to_numeric(chart_data['Current_Value'], errors='coerce').fillna(0)
+        
+        # Keep rows that have valid data in either column
+        chart_data = chart_data[(chart_data['Invested'] > 0) | (chart_data['Current_Value'] > 0)]
         
         if not chart_data.empty:
-            # Build the interactive Donut Chart
-            fig = px.pie(
-                chart_data, 
-                names='Ticker', 
-                values='Invested', 
-                hole=0.4, # This creates the modern "Donut" look
-            )
-            # Format the labels to show Ticker and Percentage inside the chart
-            fig.update_traces(textposition='inside', textinfo='percent+label')
+            # 1. CREATE SIDE-BY-SIDE COLUMNS
+            left_chart_col, right_chart_col = st.columns(2)
             
-            # Display it in Streamlit
-            st.plotly_chart(fig, use_container_width=True)
+            # 2. LEFT COLUMN: AMOUNT INVESTED
+            with left_chart_col:
+                st.markdown("<h4 style='text-align: center;'>By Amount Invested (Cost)</h4>", unsafe_allow_html=True)
+                fig_invested = px.pie(
+                    chart_data[chart_data['Invested'] > 0], 
+                    names='Ticker', 
+                    values='Invested', 
+                    hole=0.4
+                )
+                fig_invested.update_traces(textposition='inside', textinfo='percent+label')
+                fig_invested.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
+                st.plotly_chart(fig_invested, use_container_width=True)
+                
+            # 3. RIGHT COLUMN: CURRENT MARKET VALUE
+            with right_chart_col:
+                st.markdown("<h4 style='text-align: center;'>By Current Market Value</h4>", unsafe_allow_html=True)
+                fig_current = px.pie(
+                    chart_data[chart_data['Current_Value'] > 0], 
+                    names='Ticker', 
+                    values='Current_Value', 
+                    hole=0.4
+                )
+                fig_current.update_traces(textposition='inside', textinfo='percent+label')
+                fig_current.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
+                st.plotly_chart(fig_current, use_container_width=True)
         else:
-            st.info("No active positions with a value greater than $0 found.")
+            st.info("No active positions with values greater than $0 found.")
     else:
-        st.info("No 'Open Positions' data found in this report.")        
+        st.info("No 'Open Positions' data found in this report.")    
 
 # ------------------------------------------
 # TAB 3: FIFO CALCULATOR (LIFETIME ONLY)
