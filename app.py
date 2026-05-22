@@ -290,7 +290,7 @@ with tab1:
         # Sort by date descending and grab the top 5
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
-for _, row in recent_5.iterrows():
+    for _, row in recent_5.iterrows():
             # Format date to match your requested style
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
