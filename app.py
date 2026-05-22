@@ -237,14 +237,22 @@ with tab1:
     c4.metric("Dividends (USD)", f"${get_metric(df_view_1, 'F', 'Dividends', 'Total'):,.2f}")
     c5.metric("Dividends (AUD)", f"${get_metric(df_view_1, 'F', 'Dividends', 'Total in AUD'):,.2f}")
 
+    # --- SINGLE YEAR FILTER FOR REALIZED GAINS ---
+    if view_choice_1 == "Lifetime":
+        df_single_year = df_master.copy()
+        gains_title = "Realized Gains & Losses (Lifetime Total)"
+    else:
+        df_single_year = df_master[df_master['YearSource'] == view_choice_1].copy()
+        gains_title = f"Realized Gains & Losses ({view_choice_1} Only)"
+
     # Realized Gains Table
     st.divider()
-    st.subheader("Realized Gains & Losses")
+    st.subheader(gains_title)
     realized_data = {
         "Metric": ["Short Term Profit", "Short Term Loss", "Long Term Profit", "Long Term Loss", "Net Total"],
-        "Stocks": get_realized_row(df_view_1, "Stocks"),
-        "Forex": get_realized_row(df_view_1, "Forex"),
-        "Total Assets": get_realized_row(df_view_1, "Total (All Assets)")
+        "Stocks": get_realized_row(df_single_year, "Stocks"),
+        "Forex": get_realized_row(df_single_year, "Forex"),
+        "Total Assets": get_realized_row(df_single_year, "Total (All Assets)")
     }
     st.dataframe(pd.DataFrame(realized_data).set_index("Metric").style.format("${:,.2f}"), use_container_width=True)
 
