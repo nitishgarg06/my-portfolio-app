@@ -305,7 +305,6 @@ with tab1:
     st.divider()
     st.subheader("📝 Recent Trade Activity")
     
-    # Isolate STOCKS trades from the MASTER dataframe
     stock_trades = df_master[
         (df_master['A'].astype(str).str.strip().str.upper() == "TRADES") & 
         (df_master['B'].astype(str).str.strip().str.upper() == "DATA") &
@@ -313,66 +312,66 @@ with tab1:
     ].copy()
     
     if not stock_trades.empty:
-        # Sort chronologically so our FIFO math works perfectly
         stock_trades = stock_trades.sort_values(by='Trade_Date')
         
-        # --- MINI FIFO HELPER FUNCTION ---
-        def get_term_category(target_ticker, target_sell_date, df_all_trades):
-            """Scans trading history to match buy dates with the target sell date."""
-            # Filter history for just this ticker up to the sell date
+        # --- THE ULTIMATE FIFO P/L CALCULATOR ---
+        def get_fifo_pl_breakdown(target_ticker, target_sell_date, df_all_trades, current_sell_price):
+            """Calculates exact units AND exact dollar profit dynamically based on original buy prices."""
             history = df_all_trades[
                 (df_all_trades['F'].str.strip() == target_ticker) & 
                 (df_all_trades['Trade_Date'] <= target_sell_date)
             ]
             
             buy_queue = []
-            term_types = set()
+            st_units, lt_units = 0.0, 0.0
+            st_pl, lt_pl = 0.0, 0.0
             
             for _, row in history.iterrows():
                 units = float(row['H'])
                 trade_date = row['Trade_Date']
+                raw_val = abs(float(row['M']))
+                
+                # Calculate the exact price per unit for this specific row
+                price = raw_val / abs(units) if abs(units) > 0 else 0.0
                 
                 if units > 0:
-                    buy_queue.append({'date': trade_date, 'units': units})
+                    buy_queue.append({'date': trade_date, 'units': units, 'price': price})
                 elif units < 0:
                     sell_qty = abs(units)
                     is_target_sell = (trade_date == target_sell_date)
                     
-                    # Match this sell against our oldest available buy lots
                     while sell_qty > 0 and buy_queue:
                         lot = buy_queue[0]
-                        if lot['units'] <= sell_qty:
-                            sell_qty -= lot['units']
-                            if is_target_sell:
-                                days_held = (target_sell_date - lot['date']).days
-                                term_types.add("Long Term" if days_held >= 365 else "Short Term")
-                            buy_queue.pop(0)
-                        else:
-                            lot['units'] -= sell_qty
-                            if is_target_sell:
-                                days_held = (target_sell_date - lot['date']).days
-                                term_types.add("Long Term" if days_held >= 365 else "Short Term")
-                            sell_qty = 0
+                        matched_qty = min(lot['units'], sell_qty)
+                        
+                        if is_target_sell:
+                            days_held = (target_sell_date - lot['date']).days
+                            # PROFIT MATH: Units * (Sell Price - Original Buy Price)
+                            realized = matched_qty * (current_sell_price - lot['price'])
                             
-            # Determine the final category based on the lots sold
-            if "Long Term" in term_types and "Short Term" in term_types:
-                return "Mixed Term"
-            elif "Long Term" in term_types:
-                return "Long Term"
-            elif "Short Term" in term_types:
-                return "Short Term"
-            else:
-                return "Realized"
+                            if days_held >= 365:
+                                lt_units += matched_qty
+                                lt_pl += realized
+                            else:
+                                st_units += matched_qty
+                                st_pl += realized
+                                
+                        sell_qty -= matched_qty
+                        lot['units'] -= matched_qty
+                        
+                        # Remove lot if fully depleted
+                        if lot['units'] <= 0:
+                            buy_queue.pop(0)
+                            
+            return st_units, lt_units, st_pl, lt_pl
 
-        # Now grab the top 5 most recent trades for the dashboard
+        # Render the dashboard list
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
         for _, row in recent_5.iterrows():
-            # Formatting Date & Ticker
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
             
-            # Grabbing raw numbers
             raw_units = float(row['H'])
             raw_value = float(row['M'])
             
@@ -381,28 +380,38 @@ with tab1:
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
             
-            # The Fractional Check
             if units.is_integer():
                 formatted_units = f"{int(units)}"
             else:
                 formatted_units = f"{units:.4f}"
             
-            # Construct the base text
             icon = "📈" if action == "BOUGHT" else "📉"
-            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
+            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)"
             
             if action == "SOLD":
-                # Use our exact column 'O' for the generic Realized P/L
-                realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
-                pl_type = "Profit" if realized_pl >= 0 else "Loss"
+                # Trigger our calculator, completely bypassing IBKR's hidden columns!
+                st_units, lt_units, st_pl, lt_pl = get_fifo_pl_breakdown(ticker, row['Trade_Date'], stock_trades, avg_price)
                 
-                # Run the Time Machine function to see how long you held it!
-                term_label = get_term_category(ticker, row['Trade_Date'], stock_trades)
+                total_pl = st_pl + lt_pl
+                pl_type = "Profit" if total_pl >= 0 else "Loss"
                 
-                st.markdown(
-                    f"{base_text}<br>↳ *{term_label} {pl_type}:* **\${abs(realized_pl):,.2f}**",
-                    unsafe_allow_html=True
-                )
+                st_display = f"{int(st_units)}" if st_units.is_integer() else f"{st_units:.4f}"
+                lt_display = f"{int(lt_units)}" if lt_units.is_integer() else f"{lt_units:.4f}"
+                
+                if st_units > 0 and lt_units > 0:
+                    st.markdown(
+                        f"{base_text}<br>"
+                        f"↳ *Realized {pl_type}:* **${abs(total_pl):,.2f}**<br>"
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{lt_display} units Long Term (P/L: ${lt_pl:,.2f})*<br>"
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term (P/L: ${st_pl:,.2f})*",
+                        unsafe_allow_html=True
+                    )
+                elif lt_units > 0:
+                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **${abs(total_pl):,.2f}**", unsafe_allow_html=True)
+                elif st_units > 0:
+                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **${abs(total_pl):,.2f}**", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **${abs(total_pl):,.2f}**", unsafe_allow_html=True)
             else:
                 st.markdown(base_text, unsafe_allow_html=True)
                 
