@@ -314,56 +314,50 @@ with tab1:
     if not stock_trades.empty:
         stock_trades = stock_trades.sort_values(by='Trade_Date')
         
-        # --- THE ULTIMATE FIFO P/L CALCULATOR ---
-        def get_fifo_pl_breakdown(target_ticker, target_sell_date, df_all_trades, current_sell_price):
-            """Calculates exact units AND exact dollar profit dynamically based on original buy prices."""
+        # --- UPGRADED FIFO HELPER FUNCTION ---
+        def get_term_breakdown(target_ticker, target_sell_date, df_all_trades):
+            """Returns the exact number of ST and LT units sold in this transaction."""
             history = df_all_trades[
                 (df_all_trades['F'].str.strip() == target_ticker) & 
                 (df_all_trades['Trade_Date'] <= target_sell_date)
             ]
             
             buy_queue = []
-            st_units, lt_units = 0.0, 0.0
-            st_pl, lt_pl = 0.0, 0.0
+            st_units_sold = 0.0
+            lt_units_sold = 0.0
             
             for _, row in history.iterrows():
                 units = float(row['H'])
                 trade_date = row['Trade_Date']
-                raw_val = abs(float(row['M']))
-                
-                # Calculate the exact price per unit for this specific row
-                price = raw_val / abs(units) if abs(units) > 0 else 0.0
                 
                 if units > 0:
-                    buy_queue.append({'date': trade_date, 'units': units, 'price': price})
+                    buy_queue.append({'date': trade_date, 'units': units})
                 elif units < 0:
                     sell_qty = abs(units)
                     is_target_sell = (trade_date == target_sell_date)
                     
                     while sell_qty > 0 and buy_queue:
                         lot = buy_queue[0]
-                        matched_qty = min(lot['units'], sell_qty)
-                        
-                        if is_target_sell:
-                            days_held = (target_sell_date - lot['date']).days
-                            # PROFIT MATH: Units * (Sell Price - Original Buy Price)
-                            realized = matched_qty * (current_sell_price - lot['price'])
-                            
-                            if days_held >= 365:
-                                lt_units += matched_qty
-                                lt_pl += realized
-                            else:
-                                st_units += matched_qty
-                                st_pl += realized
-                                
-                        sell_qty -= matched_qty
-                        lot['units'] -= matched_qty
-                        
-                        # Remove lot if fully depleted
-                        if lot['units'] <= 0:
+                        if lot['units'] <= sell_qty:
+                            sell_qty -= lot['units']
+                            if is_target_sell:
+                                days_held = (target_sell_date - lot['date']).days
+                                if days_held >= 365:
+                                    lt_units_sold += lot['units']
+                                else:
+                                    st_units_sold += lot['units']
                             buy_queue.pop(0)
+                        else:
+                            lot['units'] -= sell_qty
+                            if is_target_sell:
+                                days_held = (target_sell_date - lot['date']).days
+                                if days_held >= 365:
+                                    lt_units_sold += sell_qty
+                                else:
+                                    st_units_sold += sell_qty
+                            sell_qty = 0
                             
-            return st_units, lt_units, st_pl, lt_pl
+            return st_units_sold, lt_units_sold
 
         # Render the dashboard list
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
@@ -389,29 +383,36 @@ with tab1:
             base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)"
             
             if action == "SOLD":
-                # Trigger our calculator, completely bypassing IBKR's hidden columns!
-                st_units, lt_units, st_pl, lt_pl = get_fifo_pl_breakdown(ticker, row['Trade_Date'], stock_trades, avg_price)
+                # Assuming 'N' is your correct Realized P/L column based on our previous step!
+                realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
+                pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
-                total_pl = st_pl + lt_pl
-                pl_type = "Profit" if total_pl >= 0 else "Loss"
+                # Fetch the exact breakdown of units
+                st_units, lt_units = get_term_breakdown(ticker, row['Trade_Date'], stock_trades)
                 
+                # Format fractions for clean display
                 st_display = f"{int(st_units)}" if st_units.is_integer() else f"{st_units:.4f}"
                 lt_display = f"{int(lt_units)}" if lt_units.is_integer() else f"{lt_units:.4f}"
                 
+                # Determine how to display the text based on the breakdown
                 if st_units > 0 and lt_units > 0:
+                    # The Split Scenario (No more "Mixed Term"!)
                     st.markdown(
                         f"{base_text}<br>"
-                        f"↳ *Realized {pl_type}:* **${abs(total_pl):,.2f}**<br>"
-                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{lt_display} units Long Term (P/L: ${lt_pl:,.2f})*<br>"
-                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term (P/L: ${st_pl:,.2f})*",
+                        f"↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**<br>"
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{lt_display} units Long Term*<br>"
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term*",
                         unsafe_allow_html=True
                     )
                 elif lt_units > 0:
-                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **${abs(total_pl):,.2f}**", unsafe_allow_html=True)
+                    # 100% Long Term
+                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
                 elif st_units > 0:
-                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **${abs(total_pl):,.2f}**", unsafe_allow_html=True)
+                    # 100% Short Term
+                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
                 else:
-                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **${abs(total_pl):,.2f}**", unsafe_allow_html=True)
+                    # Fallback
+                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
             else:
                 st.markdown(base_text, unsafe_allow_html=True)
                 
