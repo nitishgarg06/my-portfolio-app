@@ -348,6 +348,62 @@ with tab1:
         # This must align exactly with the "if not stock_trades.empty:" line above!
         st.info("No recent stock trades found.")
 
+    # --- RECENT SELL ACTIVITY WITH P/L ---
+    st.divider()
+    st.subheader("📝 Recent Sell Activity")
+
+    # 1. Isolate the Trades data for Stocks
+    df_trades = df_master[
+        (df_master['A'].astype(str).str.strip().str.upper() == 'TRADES') & 
+        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA') &
+        (df_master['D'].astype(str).str.strip().str.upper() == 'STOCKS')
+    ].copy()
+
+    if not df_trades.empty:
+        # Assuming typical IBKR column mapping:
+        # F = Ticker, G = Date/Time, I = Quantity, J = Price, L = Proceeds, O = Realized P/L
+        # (Note: You may need to adjust 'O' to match exactly where your P/L sits!)
+        
+        # Convert Quantity to numeric so we can find the "Sells" (Quantity < 0)
+        df_trades['Quantity'] = pd.to_numeric(df_trades['I'], errors='coerce').fillna(0)
+        
+        # Filter strictly for Sell orders
+        df_sells = df_trades[df_trades['Quantity'] < 0].copy()
+        
+        if not df_sells.empty:
+            # Sort by Date to get the most recent trades at the top
+            df_sells['DateObj'] = pd.to_datetime(df_sells['G'], errors='coerce')
+            df_sells = df_sells.sort_values(by='DateObj', ascending=False)
+            
+            # Display the 5 most recent sell transactions
+            for index, row in df_sells.head(5).iterrows():
+                ticker = str(row['F']).strip()
+                # Format date to be cleaner (e.g., pulling just the date portion if it has a timestamp)
+                date_str = str(row['G']).split(',')[0].split(' ')[0] 
+                
+                # Sells show as negative quantity, so we use abs() to make it read as a positive amount sold
+                units = abs(float(row['Quantity'])) 
+                avg_price = float(pd.to_numeric(row['J'], errors='coerce'))
+                
+                # Proceeds are usually positive in IBKR, but use abs() just in case
+                total_value = abs(float(pd.to_numeric(row['L'], errors='coerce'))) 
+                
+                # Pull the Realized P/L (Using Col O as the default guess)
+                realized_pl_val = row.get('O', 0)
+                realized_pl = float(pd.to_numeric(realized_pl_val, errors='coerce'))
+                
+                # Determine if it's a Profit or Loss for the text label
+                pl_type = "Profit" if realized_pl >= 0 else "Loss"
+                
+                st.write(
+                    f"📉 **Sold** {units:,.4f} units of **{ticker}** on {date_str} "
+                    f"for a total value of **${total_value:,.2f}** (Avg price: **${avg_price:,.2f}**). "
+                    f"Realized {pl_type}: **${abs(realized_pl):,.2f}**"
+                )
+        else:
+            st.info("No sell transactions found in the data.")
+    else:
+        st.info("No trade data found to display recent activity.")
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
 # ------------------------------------------
