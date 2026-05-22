@@ -370,7 +370,7 @@ with tab2:
     # TEMPORARY: Check the first 3 rows of Open Positions to verify columns
     st.write("DEBUG: Open Positions Row Snippet")
     debug_positions = df_master[
-        (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
+        (df_master['A'].astype(str).str.strip().str.upper() == 'TRADES') & 
         (df_master['B'].astype(str).str.strip().str.upper() == 'DATA')
     ].head(3)
     st.dataframe(debug_positions)
