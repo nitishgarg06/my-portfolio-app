@@ -18,23 +18,28 @@ def load_and_process_data():
     all_frames = []
 
     for yr in PORTFOLIO_YEARS:
-        # 1. Read the sheet normally (Safest method)
         df = conn.read(worksheet=yr)
         
         if df is not None and not df.empty:
-            # 2. Get the alphabet A through Z
             col_letters = list("ABCDEFGHIJKLMN")
-            current_col_count = len(df.columns)
             
-            # 3. Rename whatever columns it found to A, B, C, etc.
-            df.columns = col_letters[:current_col_count]
+            # 1. Figure out how many columns to keep (Max 14)
+            max_cols = min(len(df.columns), len(col_letters))
             
-            # 4. Safely add the missing columns (including N!) as blanks so the math never crashes
-            for letter in col_letters[current_col_count:]:
+            # 2. Safely chop off any invisible stray columns past column N!
+            df = df.iloc[:, :max_cols]
+            
+            # 3. Rename safely
+            df.columns = col_letters[:max_cols]
+            
+            # 4. Pad any missing columns up to N as blanks so math doesn't crash
+            for letter in col_letters[max_cols:]:
                 df[letter] = pd.NA
                 
             df['YearSource'] = yr
-            df['Trade_Date'] = pd.to_datetime(df['G'], errors='coerce')
+            
+            # Using .get('G') safely pulls the date even if the column is totally empty
+            df['Trade_Date'] = pd.to_datetime(df.get('G'), errors='coerce') 
             all_frames.append(df)
     
     if not all_frames:
@@ -49,7 +54,9 @@ def load_and_process_data():
                 errors='coerce'
             ).fillna(0.0)
     
-    full_df = full_df.sort_values('Trade_Date').reset_index(drop=True)
+    # Drop rows without a valid Trade Date (cleans up messy headers/footers)
+    full_df = full_df.dropna(subset=['Trade_Date']).sort_values('Trade_Date').reset_index(drop=True)
+    
     return full_df
 
 # Helper function to extract summary metrics
