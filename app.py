@@ -326,28 +326,6 @@ with tab1:
         # This must align exactly with the "if not stock_trades.empty:" line above!
         st.info("No recent stock trades found.")
 
-# --- DIAGNOSTIC X-RAY ---
-    st.divider()
-    st.subheader("🕵️ Debugging: Raw Realized Performance Data")
-    debug_df = df_view_1[
-        (df_view_1['A'].astype(str).str.strip().str.upper() == "REALIZED & UNREALIZED PERFORMANCE SUMMARY") &
-        (df_view_1['C'].astype(str).str.strip().str.upper() == "STOCKS")
-    ]
-    st.dataframe(debug_df, use_container_width=True)
-
-# --- DIAGNOSTIC X-RAY 2.0 ---
-    st.divider()
-    st.subheader("🕵️ Debugging: Raw Deposits & Dividends")
-    
-    st.write("**Deposits & Withdrawals Section:**")
-    debug_dep = df_master[df_master['A'].astype(str).str.strip().str.upper() == "DEPOSITS & WITHDRAWALS"]
-    st.dataframe(debug_dep, use_container_width=True)
-    
-    st.write("**Dividends Section:**")
-    debug_div = df_master[df_master['A'].astype(str).str.strip().str.upper() == "DIVIDENDS"]
-    st.dataframe(debug_div, use_container_width=True)
-
-
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
 # ------------------------------------------
