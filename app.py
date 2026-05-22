@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import yfinance as yf
+import plotly.express as px
 
 # --- SINGLE SOURCE OF TRUTH FOR YEARS ---
 PORTFOLIO_YEARS = ["FY24", "FY25", "FY26"]
@@ -269,7 +270,6 @@ with tab1:
     # (Your Realized Gains table code stays exactly the same here, it will automatically use the df_single_year we defined above!)
 
     # Realized Gains Table
-# Realized Gains Table
     st.divider()
     st.subheader(gains_title)
     
@@ -365,6 +365,44 @@ with tab2:
     st.subheader("💱 Forex")
     forex_inventory = get_fifo_inventory(df_master, asset_category="Forex")
     render_holdings_table(forex_inventory, is_stock=False)
+
+    # --- PORTFOLIO ALLOCATION CHART ---
+    st.divider()
+    st.subheader("📊 Portfolio Allocation")
+    
+    # Isolate the Open Positions data
+    df_positions = df_master[
+        (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
+        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA')
+    ].copy()
+    
+    if not df_positions.empty:
+        # Assuming Ticker is in Col F and Current Value is in Col M
+        # (We may need to adjust these letters based on your specific IBKR layout!)
+        chart_data = df_positions[['F', 'M']].copy() 
+        chart_data.columns = ['Ticker', 'Value']
+        
+        # Convert values to numbers and filter out $0 positions
+        chart_data['Value'] = pd.to_numeric(chart_data['Value'], errors='coerce').fillna(0)
+        chart_data = chart_data[chart_data['Value'] > 0]
+        
+        if not chart_data.empty:
+            # Build the interactive Donut Chart
+            fig = px.pie(
+                chart_data, 
+                names='Ticker', 
+                values='Value', 
+                hole=0.4, # This creates the modern "Donut" look
+            )
+            # Format the labels to show Ticker and Percentage inside the chart
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            
+            # Display it in Streamlit
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No active positions with a value greater than $0 found.")
+    else:
+        st.info("No 'Open Positions' data found in this report.")
 
 # ------------------------------------------
 # TAB 3: FIFO CALCULATOR (LIFETIME ONLY)
