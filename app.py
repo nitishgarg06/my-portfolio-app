@@ -221,29 +221,48 @@ tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calcu
 # TAB 1: SUMMARY & RECENT ACTIVITY
 # ------------------------------------------
 with tab1:
-    # Change the selectbox line to use the dynamic list
     view_choice_1 = st.selectbox("Select Financial Period (Cumulative)", dropdown_options, key="t1_view")
+    
+    # 1. Cumulative Data (For the big numbers)
     df_view_1 = df_master[df_master['YearSource'].map(year_order) <= year_order[view_choice_1]]
     
-    st.header(f"Portfolio Summary (Up to {view_choice_1})")
-    
-    # Top Level Metrics
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Investment (USD)", f"${get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD'):,.2f}")
-    c2.metric("Total Investment (AUD)", f"${get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD'):,.2f}")
-    c3.metric("Funds Deposited (AUD)", f"${get_metric(df_view_1, 'F', 'Deposits & Withdrawals', 'Total'):,.2f}")
-
-    c4, c5 = st.columns(2)
-    c4.metric("Dividends (USD)", f"${get_metric(df_view_1, 'F', 'Dividends', 'Total'):,.2f}")
-    c5.metric("Dividends (AUD)", f"${get_metric(df_view_1, 'F', 'Dividends', 'Total in AUD'):,.2f}")
-
-    # --- SINGLE YEAR FILTER FOR REALIZED GAINS ---
+    # 2. Single Year Data (For the sub-metrics and Realized Gains table)
     if view_choice_1 == "Lifetime":
         df_single_year = df_master.copy()
-        gains_title = "Realized Gains & Losses (Lifetime Total)"
+        single_year_label = "Lifetime"
     else:
         df_single_year = df_master[df_master['YearSource'] == view_choice_1].copy()
-        gains_title = f"Realized Gains & Losses ({view_choice_1} Only)"
+        single_year_label = f"In {view_choice_1}"
+        
+    st.header(f"Portfolio Summary (Up to {view_choice_1})")
+    
+    # Calculate Cumulative AND Single Year metrics
+    cum_inv_usd = get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD')
+    cur_inv_usd = get_metric(df_single_year, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD')
+    
+    cum_inv_aud = get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD')
+    cur_inv_aud = get_metric(df_single_year, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD')
+    
+    cum_dep_aud = get_metric(df_view_1, 'F', 'Deposits & Withdrawals', 'Total')
+    cur_dep_aud = get_metric(df_single_year, 'F', 'Deposits & Withdrawals', 'Total')
+    
+    cum_div_usd = get_metric(df_view_1, 'F', 'Dividends', 'Total')
+    cur_div_usd = get_metric(df_single_year, 'F', 'Dividends', 'Total')
+    
+    cum_div_aud = get_metric(df_view_1, 'F', 'Dividends', 'Total in AUD')
+    cur_div_aud = get_metric(df_single_year, 'F', 'Dividends', 'Total in AUD')
+    
+    # Top Level Metrics using delta to show the single-year numbers underneath
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Investment (USD)", f"${cum_inv_usd:,.2f}", f"{single_year_label}: ${cur_inv_usd:,.2f}", delta_color="off")
+    c2.metric("Total Investment (AUD)", f"${cum_inv_aud:,.2f}", f"{single_year_label}: ${cur_inv_aud:,.2f}", delta_color="off")
+    c3.metric("Funds Deposited (AUD)", f"${cum_dep_aud:,.2f}", f"{single_year_label}: ${cur_dep_aud:,.2f}", delta_color="off")
+
+    c4, c5 = st.columns(2)
+    c4.metric("Dividends (USD)", f"${cum_div_usd:,.2f}", f"{single_year_label}: ${cur_div_usd:,.2f}", delta_color="off")
+    c5.metric("Dividends (AUD)", f"${cum_div_aud:,.2f}", f"{single_year_label}: ${cur_div_aud:,.2f}", delta_color="off")
+
+    # (Your Realized Gains table code stays exactly the same here, it will automatically use the df_single_year we defined above!)
 
     # Realized Gains Table
     st.divider()
@@ -271,8 +290,8 @@ with tab1:
         # Sort by date descending and grab the top 5
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
-        for _, row in recent_5.iterrows():
-            # Format date to match your requested style (e.g., 17/Apr/2026)
+for _, row in recent_5.iterrows():
+            # Format date to match your requested style
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
             
@@ -280,17 +299,23 @@ with tab1:
             raw_units = float(row['H'])
             raw_value = float(row['M'])
             
-            # Clean up for the English sentence (we want positive numbers for reading)
+            # Clean up for the English sentence
             action = "Bought" if raw_units > 0 else "Sold"
             units = abs(raw_units)
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
             
+            # --- THE NEW FRACTIONAL CHECK ---
+            if units.is_integer():
+                formatted_units = f"{int(units)}"
+            else:
+                formatted_units = f"{units:.4f}"
+                
             unit_word = "unit" if units == 1.0 else "units"
             
             # Print as a bullet point using Streamlit Markdown
             st.markdown(
-                f"* {action} **{units:.4f}** {unit_word} of **{ticker}** on {date_str} "
+                f"* {action} **{formatted_units}** {unit_word} of **{ticker}** on {date_str} "
                 f"for a total value of **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)."
             )
     else:
