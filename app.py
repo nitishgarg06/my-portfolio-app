@@ -331,11 +331,10 @@ with tab1:
         use_container_width=True
     )
 
-    # --- UNIFIED RECENT ACTIVITY (ALWAYS LIFETIME, STOCKS ONLY) ---
+    # --- UNIFIED RECENT ACTIVITY (LAST 5 TRADES) ---
     st.divider()
-    st.subheader("📝 Recent Trade Activity (Last 5 Stock Trades)")
+    st.subheader("📝 Recent Trade Activity")
     
-    # Isolate STOCKS trades from the MASTER dataframe
     stock_trades = df_master[
         (df_master['A'].astype(str).str.strip().str.upper() == "TRADES") & 
         (df_master['B'].astype(str).str.strip().str.upper() == "DATA") &
@@ -343,42 +342,87 @@ with tab1:
     ].copy()
     
     if not stock_trades.empty:
-        # Sort by date descending and grab the top 5
+        stock_trades = stock_trades.sort_values(by='Trade_Date')
+        
+        # --- FIFO HELPER FUNCTION (UNIT SPLIT ONLY) ---
+        def get_term_breakdown(target_ticker, target_sell_date, df_all_trades):
+            history = df_all_trades[
+                (df_all_trades['F'].str.strip() == target_ticker) & 
+                (df_all_trades['Trade_Date'] <= target_sell_date)
+            ]
+            buy_queue = []
+            st_units_sold, lt_units_sold = 0.0, 0.0
+            
+            for _, row in history.iterrows():
+                units = float(row['H'])
+                trade_date = row['Trade_Date']
+                if units > 0:
+                    buy_queue.append({'date': trade_date, 'units': units})
+                elif units < 0:
+                    sell_qty = abs(units)
+                    is_target_sell = (trade_date == target_sell_date)
+                    while sell_qty > 0 and buy_queue:
+                        lot = buy_queue[0]
+                        matched_qty = min(lot['units'], sell_qty)
+                        if is_target_sell:
+                            days_held = (target_sell_date - lot['date']).days
+                            if days_held >= 365:
+                                lt_units_sold += matched_qty
+                            else:
+                                st_units_sold += matched_qty
+                        sell_qty -= matched_qty
+                        lot['units'] -= matched_qty
+                        if lot['units'] <= 0:
+                            buy_queue.pop(0)
+            return st_units_sold, lt_units_sold
+
+        # Render the dashboard list
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
         for _, row in recent_5.iterrows():
-            # Format date to match your requested style
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
             
-            # Grab raw numbers
             raw_units = float(row['H'])
             raw_value = float(row['M'])
             
-            # Clean up for the English sentence
-            action = "Bought" if raw_units > 0 else "Sold"
+            action = "BOUGHT" if raw_units > 0 else "SOLD"
             units = abs(raw_units)
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
             
-            # --- THE FRACTIONAL CHECK ---
-            if units.is_integer():
-                formatted_units = f"{int(units)}"
-            else:
-                formatted_units = f"{units:.4f}"
-                
-            unit_word = "unit" if units == 1.0 else "units"
+            formatted_units = f"{int(units)}" if units.is_integer() else f"{units:.4f}"
+            icon = "📈" if action == "BOUGHT" else "📉"
+            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
             
-            # Print as a bullet point using Streamlit Markdown
-            base_sentence = f"* {action} **{formatted_units}** {unit_word} of **{ticker}** on {date_str} for a total value of **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)."
-            
-            # If it's a sell, gracefully tack on the P/L from Column N right at the end of the sentence
-            if action == "Sold":
+            if action == "SOLD":
+                # NOW PULLING DIRECTLY FROM COLUMN N!
                 realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
-                base_sentence += f" Realized {pl_type}: **${abs(realized_pl):,.2f}**"
                 
-            st.markdown(base_sentence)
+                st_units, lt_units = get_term_breakdown(ticker, row['Trade_Date'], stock_trades)
+                
+                st_display = f"{int(st_units)}" if st_units.is_integer() else f"{st_units:.4f}"
+                lt_display = f"{int(lt_units)}" if lt_units.is_integer() else f"{lt_units:.4f}"
+                
+                if st_units > 0 and lt_units > 0:
+                    st.markdown(
+                        f"{base_text}<br>"
+                        f"↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**<br>"
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{lt_display} units Long Term*<br>"
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term*",
+                        unsafe_allow_html=True
+                    )
+                elif lt_units > 0:
+                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                elif st_units > 0:
+                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+            else:
+                st.markdown(base_text, unsafe_allow_html=True)
+                
+            st.write("") 
     else:
         st.info("No recent stock trades found.")
 
