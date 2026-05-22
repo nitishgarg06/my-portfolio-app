@@ -381,22 +381,33 @@ with tab2:
         st.divider()
         st.subheader("📊 Portfolio Allocation")
         
-        # 1. Process the live inventory into a chart-ready list
         chart_rows = []
         for ticker, info in stock_inventory.items():
-            units = info.get('units', 0.0)
-            avg_price = info.get('avg_price', 0.0)
+            # Safe parsing: Handle both dictionary and list structures
+            if isinstance(info, dict):
+                units = float(info.get('units', info.get('quantity', 0.0)))
+                avg_price = float(info.get('avg_price', info.get('cost', 0.0)))
+                current_price = float(info.get('current_price', avg_price))
+            elif isinstance(info, (list, tuple)) and len(info) >= 2:
+                # Fallback if your FIFO stores it as [units, avg_price]
+                units = float(info[0])
+                avg_price = float(info[1])
+                current_price = avg_price
+            else:
+                # Universal fallback if it's a custom object or single value
+                try:
+                    units = float(getattr(info, 'units', getattr(info, 'quantity', 0.0)))
+                    avg_price = float(getattr(info, 'avg_price', getattr(info, 'cost', 0.0)))
+                    current_price = float(getattr(info, 'current_price', avg_price))
+                except Exception:
+                    continue
             
             # Skip positions that have been completely closed out
             if units <= 0:
                 continue
                 
-            # Calculate Cost Basis (Amount Invested)
+            # Calculate values
             cost_basis = units * avg_price
-            
-            # Fetch Current Market Price if available, otherwise fall back to cost
-            # (If your inventory dict tracks 'current_price', use it here; otherwise we default to cost)
-            current_price = info.get('current_price', avg_price)
             current_value = units * current_price
             
             chart_rows.append({
@@ -428,7 +439,7 @@ with tab2:
         else:
             st.info("No active holdings found to display in the chart.")
     else:
-        st.info("Inventory is empty. Add trade data to view allocation.")            
+        st.info("Inventory is empty. Add trade data to view allocation.")         
 
 # ------------------------------------------
 # TAB 3: FIFO CALCULATOR (LIFETIME ONLY)
