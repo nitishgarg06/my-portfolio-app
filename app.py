@@ -253,6 +253,14 @@ with tab1:
         
     st.header(f"Portfolio Summary (Up to {view_choice_1})")
     
+    # Add a toggle to let the user choose which metric is the "Big Number"
+    display_mode = st.radio(
+        "Metric Focus:", 
+        ["Cumulative as Primary", "Single Year as Primary"], 
+        horizontal=True
+    )
+    st.write("") # Quick spacer
+    
     # Calculate Cumulative AND Single Year metrics
     cum_inv_usd = get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD')
     cur_inv_usd = get_metric(df_single_year, 'M', 'Trades', 'Total', col_D='Stocks', col_E='USD')
@@ -260,26 +268,34 @@ with tab1:
     cum_inv_aud = get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD')
     cur_inv_aud = get_metric(df_single_year, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD')
     
-    # Deposits (Summing the raw data rows to avoid Total row double-counting)
     cum_dep_aud = get_metric(df_view_1, 'F', 'Deposits & Withdrawals', col_B='Data', col_C='Total')
     cur_dep_aud = get_metric(df_single_year, 'F', 'Deposits & Withdrawals', col_B='Data', col_C='Total')
     
-    # Dividends (Using Data rows for USD, and your dedicated Total row for AUD)
     cum_div_usd = get_metric(df_view_1, 'F', 'Dividends', col_B='Data', col_C='Total')
     cur_div_usd = get_metric(df_single_year, 'F', 'Dividends', col_B='Data', col_C='Total')
     
     cum_div_aud = get_metric(df_view_1, 'F', 'Dividends', col_C='Total in AUD')
     cur_div_aud = get_metric(df_single_year, 'F', 'Dividends', col_C='Total in AUD')
     
-    # Top Level Metrics using delta to show the single-year numbers underneath
+    # Render the metrics based on the toggle choice
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Investment (USD)", f"${cum_inv_usd:,.2f}", f"{single_year_label}: ${cur_inv_usd:,.2f}", delta_color="off")
-    c2.metric("Total Investment (AUD)", f"${cum_inv_aud:,.2f}", f"{single_year_label}: ${cur_inv_aud:,.2f}", delta_color="off")
-    c3.metric("Funds Deposited (AUD)", f"${cum_dep_aud:,.2f}", f"{single_year_label}: ${cur_dep_aud:,.2f}", delta_color="off")
-
     c4, c5 = st.columns(2)
-    c4.metric("Dividends (USD)", f"${cum_div_usd:,.2f}", f"{single_year_label}: ${cur_div_usd:,.2f}", delta_color="off")
-    c5.metric("Dividends (AUD)", f"${cum_div_aud:,.2f}", f"{single_year_label}: ${cur_div_aud:,.2f}", delta_color="off")
+    
+    if display_mode == "Cumulative as Primary":
+        c1.metric("Total Investment (USD)", f"${cum_inv_usd:,.2f}", f"{single_year_label}: ${cur_inv_usd:,.2f}", delta_color="off")
+        c2.metric("Total Investment (AUD)", f"${cum_inv_aud:,.2f}", f"{single_year_label}: ${cur_inv_aud:,.2f}", delta_color="off")
+        c3.metric("Funds Deposited (AUD)", f"${cum_dep_aud:,.2f}", f"{single_year_label}: ${cur_dep_aud:,.2f}", delta_color="off")
+    
+        c4.metric("Dividends (USD)", f"${cum_div_usd:,.2f}", f"{single_year_label}: ${cur_div_usd:,.2f}", delta_color="off")
+        c5.metric("Dividends (AUD)", f"${cum_div_aud:,.2f}", f"{single_year_label}: ${cur_div_aud:,.2f}", delta_color="off")
+    else:
+        # Flips the logic so the Single Year is the big text, and Cumulative drops to the delta text
+        c1.metric(f"Investment {single_year_label} (USD)", f"${cur_inv_usd:,.2f}", f"Cumulative: ${cum_inv_usd:,.2f}", delta_color="off")
+        c2.metric(f"Investment {single_year_label} (AUD)", f"${cur_inv_aud:,.2f}", f"Cumulative: ${cum_inv_aud:,.2f}", delta_color="off")
+        c3.metric(f"Deposited {single_year_label} (AUD)", f"${cur_dep_aud:,.2f}", f"Cumulative: ${cum_dep_aud:,.2f}", delta_color="off")
+    
+        c4.metric(f"Dividends {single_year_label} (USD)", f"${cur_div_usd:,.2f}", f"Cumulative: ${cum_div_usd:,.2f}", delta_color="off")
+        c5.metric(f"Dividends {single_year_label} (AUD)", f"${cur_div_aud:,.2f}", f"Cumulative: ${cum_div_aud:,.2f}", delta_color="off")
 
     # (Your Realized Gains table code stays exactly the same here, it will automatically use the df_single_year we defined above!)
 
@@ -438,9 +454,9 @@ with tab1:
     with st.expander("🕵️ Logs: P/L Columns & FIFO"):       
         #st.write("**1. Find your Realized P/L Column:**")
         #st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
-        st.dataframe(recent_5, use_container_width=True)
+        #st.dataframe(recent_5, use_container_width=True)
         
-        st.write("**Test the FIFO Math (Timeline Verification):**")
+        st.write("**Check the FIFO Math (Timeline Verification):**")
         st.write("Type a ticker you recently sold to see your exact chronological buy/sell history. You can manually verify if the gap between your buys and the recent sell is > 365 days.")
         
         test_ticker = st.text_input("Enter Ticker to test (e.g., AAPL):").strip().upper()
