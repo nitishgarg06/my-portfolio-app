@@ -45,21 +45,25 @@ def load_and_process_data():
     return full_df
 
 # Helper function to extract summary metrics
-def get_metric(df, target_col, section_name, **kwargs):
+def get_metric(df, target_col, section_name, col_B_value=None, **kwargs):
     """
-    Dynamically sums a target column based on the section name in Col A 
-    and any other column filters passed in (e.g., col_B="Data", col_C="Stocks").
+    Dynamically sums a target column based on the section name in Col A.
+    Handles legacy col_B positional arguments and new dynamic kwargs.
     """
     # 1. Base filter: Match the exact section name in Column A
     mask = df['A'].astype(str).str.strip().str.upper() == section_name.upper()
     
-    # 2. Dynamic filter: Apply any extra column filters passed via kwargs
+    # 2. Legacy fallback: Check Column B if a 4th argument was provided
+    if col_B_value:
+        mask &= df['B'].astype(str).str.strip().str.upper() == str(col_B_value).upper()
+        
+    # 3. Dynamic filter: Apply any extra column filters passed via kwargs
     for key, value in kwargs.items():
         if key.startswith('col_'):
-            col_letter = key.split('_')[1] # Extracts 'B' from 'col_B'
+            col_letter = key.split('_')[1] # Extracts 'C' from 'col_C'
             mask &= df[col_letter].astype(str).str.strip().str.upper() == str(value).upper()
             
-    # 3. Sum the matched rows in the target column
+    # 4. Sum the matched rows in the target column
     try:
         return pd.to_numeric(df.loc[mask, target_col], errors='coerce').fillna(0).sum()
     except Exception:
