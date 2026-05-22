@@ -376,70 +376,43 @@ with tab2:
     st.dataframe(debug_positions)
     
     
-    # --- PORTFOLIO ALLOCATION CHART (FROM LIVE INVENTORY) ---
-    if stock_inventory:
-        st.divider()
-        st.subheader("📊 Portfolio Allocation")
+    # --- PORTFOLIO ALLOCATION CHART ---
+    st.divider()
+    st.subheader("📊 Portfolio Allocation")
+    
+    # Isolate the Open Positions data
+    df_positions = df_master[
+        (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
+        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA')
+    ].copy()
+    
+    if not df_positions.empty:
+        # Assuming Ticker is in Col F and Current Value is in Col M
+        # (We may need to adjust these letters based on your specific IBKR layout!)
+        chart_data = df_positions[['F', 'M']].copy() 
+        chart_data.columns = ['Ticker', 'Value']
         
-        chart_rows = []
-        for ticker, info in stock_inventory.items():
-            # Safe parsing: Handle both dictionary and list structures
-            if isinstance(info, dict):
-                units = float(info.get('units', info.get('quantity', 0.0)))
-                avg_price = float(info.get('avg_price', info.get('cost', 0.0)))
-                current_price = float(info.get('current_price', avg_price))
-            elif isinstance(info, (list, tuple)) and len(info) >= 2:
-                # Fallback if your FIFO stores it as [units, avg_price]
-                units = float(info[0])
-                avg_price = float(info[1])
-                current_price = avg_price
-            else:
-                # Universal fallback if it's a custom object or single value
-                try:
-                    units = float(getattr(info, 'units', getattr(info, 'quantity', 0.0)))
-                    avg_price = float(getattr(info, 'avg_price', getattr(info, 'cost', 0.0)))
-                    current_price = float(getattr(info, 'current_price', avg_price))
-                except Exception:
-                    continue
-            
-            # Skip positions that have been completely closed out
-            if units <= 0:
-                continue
-                
-            # Calculate values
-            cost_basis = units * avg_price
-            current_value = units * current_price
-            
-            chart_rows.append({
-                "Ticker": ticker,
-                "Amount Invested": cost_basis,
-                "Current Value": current_value
-            })
-            
-        df_chart_source = pd.DataFrame(chart_rows)
+        # Convert values to numbers and filter out $0 positions
+        chart_data['Value'] = pd.to_numeric(chart_data['Value'], errors='coerce').fillna(0)
+        chart_data = chart_data[chart_data['Value'] > 0]
         
-        if not df_chart_source.empty:
-            # 2. Add the UI toggle button
-            allocation_metric = st.radio(
-                "View Allocation By:",
-                ["Current Value", "Amount Invested"],
-                horizontal=True
-            )
-            
-            # 3. Render the dynamic donut chart based on selection
+        if not chart_data.empty:
+            # Build the interactive Donut Chart
             fig = px.pie(
-                df_chart_source, 
+                chart_data, 
                 names='Ticker', 
-                values=allocation_metric, 
-                hole=0.4
+                values='Value', 
+                hole=0.4, # This creates the modern "Donut" look
             )
+            # Format the labels to show Ticker and Percentage inside the chart
             fig.update_traces(textposition='inside', textinfo='percent+label')
             
+            # Display it in Streamlit
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No active holdings found to display in the chart.")
+            st.info("No active positions with a value greater than $0 found.")
     else:
-        st.info("Inventory is empty. Add trade data to view allocation.")         
+        st.info("No 'Open Positions' data found in this report.")        
 
 # ------------------------------------------
 # TAB 3: FIFO CALCULATOR (LIFETIME ONLY)
