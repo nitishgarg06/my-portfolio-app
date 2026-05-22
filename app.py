@@ -395,7 +395,7 @@ with tab2:
     
     if not df_positions.empty:
         # Pull Ticker (Col F), Invested Value (Col J), and Current Market Value (Col M)
-        chart_data = df_positions[['F', 'J', 'M']].copy() 
+        chart_data = df_positions[['F', 'J', 'L']].copy() 
         chart_data.columns = ['Ticker', 'Invested', 'Current_Value']
         
         # Convert values to numbers and fill missing ones with 0
