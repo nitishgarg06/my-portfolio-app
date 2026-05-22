@@ -341,11 +341,57 @@ with tab1:
         (df_master['D'].astype(str).str.strip().str.upper() == "STOCKS")
     ].copy()
     
+    # --- GLOBAL FIFO HELPER FUNCTION (Moved to top level scope) ---
+    def get_term_breakdown(target_ticker, target_sell_date, df_all_trades):
+        """Returns the exact number of ST and LT units sold in this transaction."""
+        history = df_all_trades[
+            (df_all_trades['F'].str.strip() == target_ticker) & 
+            (df_all_trades['Trade_Date'] <= target_sell_date)
+        ]
+        
+        buy_queue = []
+        st_units_sold = 0.0
+        lt_units_sold = 0.0
+        
+        for _, row in history.iterrows():
+            units = float(row['H'])
+            trade_date = row['Trade_Date']
+            
+            if units > 0:
+                buy_queue.append({'date': trade_date, 'units': units})
+            elif units < 0:
+                sell_qty = abs(units)
+                is_target_sell = (trade_date == target_sell_date)
+                
+                while sell_qty > 0 and buy_queue:
+                    lot = buy_queue[0]
+                    if lot['units'] <= sell_qty:
+                        sell_qty -= lot['units']
+                        if is_target_sell:
+                            days_held = (target_sell_date - lot['date']).days
+                            if days_held >= 365:
+                                lt_units_sold += lot['units']
+                            else:
+                                st_units_sold += lot['units']
+                        buy_queue.pop(0)
+                    else:
+                        lot['units'] -= sell_qty
+                        if is_target_sell:
+                            days_held = (target_sell_date - lot['date']).days
+                            if days_held >= 365:
+                                lt_units_sold += sell_qty
+                            else:
+                                st_units_sold += sell_qty
+                        sell_qty = 0
+                        
+        return st_units_sold, lt_units_sold
+
+    # --- UI DISPLAY RENDERING ---
     if not stock_trades.empty:
         stock_trades = stock_trades.sort_values(by='Trade_Date')
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
-        # 1. Initialize an empty string to accumulate all our trade text rows
+        # Initialize string to gather rows inside our text box
         container_html = ""
         
         for i, (_, row) in enumerate(recent_5.iterrows()):
@@ -364,13 +410,14 @@ with tab1:
             icon = "📈" if action == "BOUGHT" else "📉"
             base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)"
             
-            # Construct the text block for this specific trade
             trade_text = f"{base_text}"
+            
             if action == "SOLD":
                 realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
                 st_units, lt_units = get_term_breakdown(ticker, row['Trade_Date'], stock_trades)
+                
                 st_display = f"{int(st_units)}" if st_units.is_integer() else f"{st_units:.4f}"
                 lt_display = f"{int(lt_units)}" if lt_units.is_integer() else f"{lt_units:.4f}"
                 
@@ -387,15 +434,13 @@ with tab1:
                 else:
                     trade_text += f"<br>↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**"
             
-            # Append this trade text to our master container string, with spacing between items
-            # We use a horizontal rule `<hr>` inside the container except for the very last item
+            # Combine formatting inside our textbox string
             if i < len(recent_5) - 1:
                 container_html += f"{trade_text}<br><br><hr style='border:0; border-top: 1px dashed #e0e0e0; margin: 10px 0;'><br>"
             else:
                 container_html += f"{trade_text}"
         
-        # 2. Render the accumulated text inside a single custom HTML "TextBox"
-        # Background color #f8f9fa is a soft, professional light grey/white off-tone
+        # Display the complete container with background tint
         st.markdown(
             f"""
             <div style="
