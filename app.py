@@ -369,10 +369,13 @@ with tab2:
     
     # TEMPORARY: Check the first 3 rows of Open Positions to verify columns
     st.write("DEBUG: Open Positions Row Snippet")
+    # 1. Find the highest (latest) year in the YearSource column
+    latest_year = df_master['YearSource'].dropna().max()
     debug_positions = df_master[
         (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
         (df_master['B'].astype(str).str.strip().str.upper() == 'DATA') &
-        (df_master['D'].astype(str).str.strip().str.upper() == 'STOCKS')
+        (df_master['D'].astype(str).str.strip().str.upper() == 'STOCKS') &
+        (df_master['YearSource'] == latest_year)
     ].head(10)
     st.dataframe(debug_positions)
     
