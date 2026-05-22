@@ -429,6 +429,10 @@ with tab1:
 
     # --- TEMPORARY DEBUG EXPANDER ---
     with st.expander("🕵️ Debug: P/L Columns & FIFO Testing"):       
+        #st.write("**1. Find your Realized P/L Column:**")
+        #st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
+        st.dataframe(recent_5, use_container_width=True)
+        
         st.write("**Test the FIFO Math (Timeline Verification):**")
         st.write("Type a ticker you recently sold to see your exact chronological buy/sell history. You can manually verify if the gap between your buys and the recent sell is > 365 days.")
         
