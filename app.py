@@ -301,9 +301,9 @@ with tab1:
         use_container_width=True
     )
 
-    # --- RECENT ACTIVITY (ALWAYS LIFETIME, STOCKS ONLY) ---
+    # --- UNIFIED RECENT ACTIVITY (LAST 5 TRADES) ---
     st.divider()
-    st.subheader("Recent Trade Activity (Last 5 Stock Trades)")
+    st.subheader("📝 Recent Trade Activity")
     
     # Isolate STOCKS trades from the MASTER dataframe
     stock_trades = df_master[
@@ -313,109 +313,102 @@ with tab1:
     ].copy()
     
     if not stock_trades.empty:
-        # Sort by date descending and grab the top 5
+        # Sort chronologically so our FIFO math works perfectly
+        stock_trades = stock_trades.sort_values(by='Trade_Date')
+        
+        # --- MINI FIFO HELPER FUNCTION ---
+        def get_term_category(target_ticker, target_sell_date, df_all_trades):
+            """Scans trading history to match buy dates with the target sell date."""
+            # Filter history for just this ticker up to the sell date
+            history = df_all_trades[
+                (df_all_trades['F'].str.strip() == target_ticker) & 
+                (df_all_trades['Trade_Date'] <= target_sell_date)
+            ]
+            
+            buy_queue = []
+            term_types = set()
+            
+            for _, row in history.iterrows():
+                units = float(row['H'])
+                trade_date = row['Trade_Date']
+                
+                if units > 0:
+                    buy_queue.append({'date': trade_date, 'units': units})
+                elif units < 0:
+                    sell_qty = abs(units)
+                    is_target_sell = (trade_date == target_sell_date)
+                    
+                    # Match this sell against our oldest available buy lots
+                    while sell_qty > 0 and buy_queue:
+                        lot = buy_queue[0]
+                        if lot['units'] <= sell_qty:
+                            sell_qty -= lot['units']
+                            if is_target_sell:
+                                days_held = (target_sell_date - lot['date']).days
+                                term_types.add("Long Term" if days_held >= 365 else "Short Term")
+                            buy_queue.pop(0)
+                        else:
+                            lot['units'] -= sell_qty
+                            if is_target_sell:
+                                days_held = (target_sell_date - lot['date']).days
+                                term_types.add("Long Term" if days_held >= 365 else "Short Term")
+                            sell_qty = 0
+                            
+            # Determine the final category based on the lots sold
+            if "Long Term" in term_types and "Short Term" in term_types:
+                return "Mixed Term"
+            elif "Long Term" in term_types:
+                return "Long Term"
+            elif "Short Term" in term_types:
+                return "Short Term"
+            else:
+                return "Realized"
+
+        # Now grab the top 5 most recent trades for the dashboard
         recent_5 = stock_trades.sort_values(by='Trade_Date', ascending=False).head(5)
         
         for _, row in recent_5.iterrows():
-            # Format date to match your requested style
+            # Formatting Date & Ticker
             date_str = row['Trade_Date'].strftime('%d/%b/%Y')
             ticker = str(row['F']).strip()
             
-            # Grab raw numbers
+            # Grabbing raw numbers
             raw_units = float(row['H'])
             raw_value = float(row['M'])
             
-            # Clean up for the English sentence
             action = "BOUGHT" if raw_units > 0 else "SOLD"
             units = abs(raw_units)
             total_val = abs(raw_value)
             avg_price = total_val / units if units > 0 else 0.0
             
-            # --- THE FRACTIONAL CHECK ---
+            # The Fractional Check
             if units.is_integer():
                 formatted_units = f"{int(units)}"
             else:
                 formatted_units = f"{units:.4f}"
-
-            # Construct the base text that applies to BOTH Buys and Sells
+            
+            # Construct the base text
             icon = "📈" if action == "BOUGHT" else "📉"
             base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
             
-            # Check if it's a Sell to add the P/L line!
             if action == "SOLD":
-                # Note: Adjust 'O' if your Realized P/L is in a different column!
-                realized_pl_val = row.get('O', 0)
-                realized_pl = float(pd.to_numeric(realized_pl_val, errors='coerce'))
+                # Use our exact column 'O' for the generic Realized P/L
+                realized_pl = float(pd.to_numeric(row.get('O', 0), errors='coerce'))
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
+                # Run the Time Machine function to see how long you held it!
+                term_label = get_term_category(ticker, row['Trade_Date'], stock_trades)
+                
                 st.markdown(
-                    f"{base_text}<br>↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**",
+                    f"{base_text}<br>↳ *{term_label} {pl_type}:* **\${abs(realized_pl):,.2f}**",
                     unsafe_allow_html=True
                 )
             else:
-                # Standard Buy display
                 st.markdown(base_text, unsafe_allow_html=True)
                 
-            st.write("") # Adds a tiny spacer between items
+            st.write("") 
     else:
         st.info("No recent stock trades found.")
-
-    # --- RECENT SELL ACTIVITY WITH P/L ---
-    st.divider()
-    st.subheader("📝 Recent Sell Activity (With P/L)")
-
-    # Isolate STOCKS trades from the MASTER dataframe
-    df_trades = df_master[
-        (df_master['A'].astype(str).str.strip().str.upper() == 'TRADES') & 
-        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA') &
-        (df_master['D'].astype(str).str.strip().str.upper() == 'STOCKS')
-    ].copy()
-
-    if not df_trades.empty:
-        # 1. Use YOUR exact column 'H' for Quantity
-        df_trades['Quantity'] = pd.to_numeric(df_trades['H'], errors='coerce').fillna(0)
-        
-        # 2. Filter strictly for Sell orders (Quantity < 0)
-        df_sells = df_trades[df_trades['Quantity'] < 0].copy()
-        
-        if not df_sells.empty:
-            # 3. Use YOUR exact 'Trade_Date' column for sorting
-            df_sells = df_sells.sort_values(by='Trade_Date', ascending=False)
-            
-            for index, row in df_sells.head(5).iterrows():
-                # Reusing your exact date and ticker logic
-                date_str = row['Trade_Date'].strftime('%d/%b/%Y')
-                ticker = str(row['F']).strip()
-                
-                # Reusing your exact math logic for Units, Value, and Price
-                raw_units = float(row['H'])
-                raw_value = float(row['M'])
-                units = abs(raw_units)
-                total_val = abs(raw_value)
-                avg_price = total_val / units if units > 0 else 0.0
-                
-                # Reusing your exact fractional check
-                if units.is_integer():
-                    formatted_units = f"{int(units)}"
-                else:
-                    formatted_units = f"{units:.4f}"
-                
-                # Pull the Realized P/L (Change 'O' to your exact P/L column letter if it shows $0.00!)
-                realized_pl_val = row.get('O', 0)
-                realized_pl = float(pd.to_numeric(realized_pl_val, errors='coerce'))
-                pl_type = "Profit" if realized_pl >= 0 else "Loss"
-                
-                # Display using Option 1 (The Stacked HTML)
-                st.markdown(
-                    f"**📉 SOLD:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)<br>"
-                    f"↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**",
-                    unsafe_allow_html=True
-                )
-                st.write("") # Adds a tiny bit of spacing between items
-        else:
-            st.info("No sell transactions found in the data.")
-    else:
-        st.info("No trade data found to display recent activity.")
         
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
