@@ -400,7 +400,7 @@ with tab2:
         chart_data.columns = ['Ticker', 'Invested']
         
         # Convert values to numbers and filter out $0 positions
-        chart_data['Value'] = pd.to_numeric(chart_data['Value'], errors='coerce').fillna(0)
+        chart_data['Invested'] = pd.to_numeric(chart_data['Invested'], errors='coerce').fillna(0)
         chart_data = chart_data[chart_data['Value'] > 0]
         
         if not chart_data.empty:
