@@ -350,9 +350,9 @@ with tab1:
 
     # --- RECENT SELL ACTIVITY WITH P/L ---
     st.divider()
-    st.subheader("📝 Recent Sell Activity")
+    st.subheader("📝 Recent Sell Activity (With P/L)")
 
-    # 1. Isolate the Trades data for Stocks
+    # Isolate STOCKS trades from the MASTER dataframe
     df_trades = df_master[
         (df_master['A'].astype(str).str.strip().str.upper() == 'TRADES') & 
         (df_master['B'].astype(str).str.strip().str.upper() == 'DATA') &
@@ -360,50 +360,51 @@ with tab1:
     ].copy()
 
     if not df_trades.empty:
-        # Assuming typical IBKR column mapping:
-        # F = Ticker, G = Date/Time, I = Quantity, J = Price, L = Proceeds, O = Realized P/L
-        # (Note: You may need to adjust 'O' to match exactly where your P/L sits!)
+        # 1. Use YOUR exact column 'H' for Quantity
+        df_trades['Quantity'] = pd.to_numeric(df_trades['H'], errors='coerce').fillna(0)
         
-        # Convert Quantity to numeric so we can find the "Sells" (Quantity < 0)
-        df_trades['Quantity'] = pd.to_numeric(df_trades['I'], errors='coerce').fillna(0)
-        
-        # Filter strictly for Sell orders
+        # 2. Filter strictly for Sell orders (Quantity < 0)
         df_sells = df_trades[df_trades['Quantity'] < 0].copy()
         
         if not df_sells.empty:
-            # Sort by Date to get the most recent trades at the top
-            df_sells['DateObj'] = pd.to_datetime(df_sells['G'], errors='coerce')
-            df_sells = df_sells.sort_values(by='DateObj', ascending=False)
+            # 3. Use YOUR exact 'Trade_Date' column for sorting
+            df_sells = df_sells.sort_values(by='Trade_Date', ascending=False)
             
-            # Display the 5 most recent sell transactions
             for index, row in df_sells.head(5).iterrows():
+                # Reusing your exact date and ticker logic
+                date_str = row['Trade_Date'].strftime('%d/%b/%Y')
                 ticker = str(row['F']).strip()
-                # Format date to be cleaner (e.g., pulling just the date portion if it has a timestamp)
-                date_str = str(row['G']).split(',')[0].split(' ')[0] 
                 
-                # Sells show as negative quantity, so we use abs() to make it read as a positive amount sold
-                units = abs(float(row['Quantity'])) 
-                avg_price = float(pd.to_numeric(row['J'], errors='coerce'))
+                # Reusing your exact math logic for Units, Value, and Price
+                raw_units = float(row['H'])
+                raw_value = float(row['M'])
+                units = abs(raw_units)
+                total_val = abs(raw_value)
+                avg_price = total_val / units if units > 0 else 0.0
                 
-                # Proceeds are usually positive in IBKR, but use abs() just in case
-                total_value = abs(float(pd.to_numeric(row['L'], errors='coerce'))) 
+                # Reusing your exact fractional check
+                if units.is_integer():
+                    formatted_units = f"{int(units)}"
+                else:
+                    formatted_units = f"{units:.4f}"
                 
-                # Pull the Realized P/L (Using Col O as the default guess)
+                # Pull the Realized P/L (Change 'O' to your exact P/L column letter if it shows $0.00!)
                 realized_pl_val = row.get('O', 0)
                 realized_pl = float(pd.to_numeric(realized_pl_val, errors='coerce'))
-                
-                # Determine if it's a Profit or Loss for the text label
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
-                st.write(
-                    f"📉 **Sold** {units:,.4f} units of **{ticker}** on {date_str} "
-                    f"for a total value of **${total_value:,.2f}** (Avg price: **${avg_price:,.2f}**). "
-                    f"Realized {pl_type}: **${abs(realized_pl):,.2f}**"
+                # Display using Option 1 (The Stacked HTML)
+                st.markdown(
+                    f"**📉 SOLD:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)<br>"
+                    f"↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**",
+                    unsafe_allow_html=True
                 )
+                st.write("") # Adds a tiny bit of spacing between items
         else:
             st.info("No sell transactions found in the data.")
     else:
         st.info("No trade data found to display recent activity.")
+        
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
 # ------------------------------------------
