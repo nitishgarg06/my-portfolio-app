@@ -60,10 +60,14 @@ def get_metric(df, col_to_sum, col_A, col_B=None, col_C=None, col_D=None, col_E=
     return float(numeric_data.sum())
 
 def get_realized_row(df, asset_class):
-    st_prof = get_metric(df, 'F', "Realized & Unrealized Performance Summary", col_C=asset_class)
-    st_loss = get_metric(df, 'G', "Realized & Unrealized Performance Summary", col_C=asset_class)
-    lt_prof = get_metric(df, 'H', "Realized & Unrealized Performance Summary", col_C=asset_class)
-    lt_loss = get_metric(df, 'I', "Realized & Unrealized Performance Summary", col_C=asset_class)
+    # Added col_B="Data" to strictly prevent double-counting the "Total" rows!
+    st_prof = get_metric(df, 'F', "Realized & Unrealized Performance Summary", col_B="Data", col_C=asset_class)
+    st_loss = get_metric(df, 'G', "Realized & Unrealized Performance Summary", col_B="Data", col_C=asset_class)
+    
+    # Using H and I for Long-Term (Change these to 'F' and 'G' if IBKR stacked them in your report)
+    lt_prof = get_metric(df, 'H', "Realized & Unrealized Performance Summary", col_B="Data", col_C=asset_class)
+    lt_loss = get_metric(df, 'I', "Realized & Unrealized Performance Summary", col_B="Data", col_C=asset_class)
+    
     return [st_prof, st_loss, lt_prof, lt_loss, (st_prof + st_loss + lt_prof + lt_loss)]
 
 # ==========================================
