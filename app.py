@@ -359,15 +359,8 @@ with tab2:
     # Changed from df_view to df_master so it ALWAYS uses lifetime data
     stock_inventory = get_fifo_inventory(df_master, asset_category="Stocks")
     render_holdings_table(stock_inventory, is_stock=True)
-    
-    # --- RENDER FOREX ---
-    st.divider()
-    st.subheader("💱 Forex")
-    forex_inventory = get_fifo_inventory(df_master, asset_category="Forex")
-    render_holdings_table(forex_inventory, is_stock=False)
-    
+
     # --- PORTFOLIO ALLOCATION CHARTS (SIDE-BY-SIDE) ---
-    st.divider()
     st.subheader("📊 Portfolio Allocation")
     
     # Isolate the Open Positions data
