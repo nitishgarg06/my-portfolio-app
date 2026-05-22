@@ -409,6 +409,20 @@ with tab1:
             st.write("") 
     else:
         st.info("No recent stock trades found.")
+
+    # --- TEMPORARY DEBUG EXPANDER ---
+    with st.expander("🕵️ Debug: P/L Columns & FIFO Testing"):
+        st.write("**1. Find your Realized P/L Column:**")
+        st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
+        st.dataframe(recent_5, use_container_width=True)
+        
+        st.write("**2. Test the FIFO Math (Timeline Verification):**")
+        st.write("Type a ticker you recently sold to see your exact chronological buy/sell history. You can manually verify if the gap between your buys and the recent sell is > 365 days.")
+        
+        test_ticker = st.text_input("Enter Ticker to test (e.g., AAPL):").strip().upper()
+        if test_ticker:
+            fifo_test_df = stock_trades[stock_trades['F'].str.strip().str.upper() == test_ticker]
+            st.dataframe(fifo_test_df[['Trade_Date', 'F', 'H', 'M', 'O']], use_container_width=True)
         
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
