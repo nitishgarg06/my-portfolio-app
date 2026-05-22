@@ -245,14 +245,16 @@ with tab1:
     cum_inv_aud = get_metric(df_view_1, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD')
     cur_inv_aud = get_metric(df_single_year, 'M', 'Trades', 'Total', col_D='Stocks', col_E='AUD')
     
-    cum_dep_aud = get_metric(df_view_1, 'F', 'Deposits & Withdrawals', 'Total')
-    cur_dep_aud = get_metric(df_single_year, 'F', 'Deposits & Withdrawals', 'Total')
+    # Deposits (Summing the raw data rows to avoid Total row double-counting)
+    cum_dep_aud = get_metric(df_view_1, 'F', 'Deposits & Withdrawals', col_B='Data')
+    cur_dep_aud = get_metric(df_single_year, 'F', 'Deposits & Withdrawals', col_B='Data')
     
-    cum_div_usd = get_metric(df_view_1, 'F', 'Dividends', 'Total')
-    cur_div_usd = get_metric(df_single_year, 'F', 'Dividends', 'Total')
+    # Dividends (Using Data rows for USD, and your dedicated Total row for AUD)
+    cum_div_usd = get_metric(df_view_1, 'F', 'Dividends', col_B='Data', col_D='USD')
+    cur_div_usd = get_metric(df_single_year, 'F', 'Dividends', col_B='Data', col_D='USD')
     
-    cum_div_aud = get_metric(df_view_1, 'F', 'Dividends', 'Total in AUD')
-    cur_div_aud = get_metric(df_single_year, 'F', 'Dividends', 'Total in AUD')
+    cum_div_aud = get_metric(df_view_1, 'F', 'Dividends', col_C='Total in AUD')
+    cur_div_aud = get_metric(df_single_year, 'F', 'Dividends', col_C='Total in AUD')
     
     # Top Level Metrics using delta to show the single-year numbers underneath
     c1, c2, c3 = st.columns(3)
