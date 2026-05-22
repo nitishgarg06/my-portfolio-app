@@ -23,7 +23,7 @@ def load_and_process_data():
         
         if df is not None and not df.empty:
             # 2. Get the alphabet A through Z
-            col_letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            col_letters = list("ABCDEFGHIJKLMN")
             current_col_count = len(df.columns)
             
             # 3. Rename whatever columns it found to A, B, C, etc.
@@ -428,9 +428,9 @@ with tab1:
         st.info("No recent stock trades found.")
 
     # --- TEMPORARY DEBUG EXPANDER ---
-    with st.expander("🕵️ Debug: P/L Columns & FIFO Testing"):       
-        st.write("**1. Find your Realized P/L Column:**")
-        st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
+    with st.expander("🕵️ Logs: P/L Columns & FIFO"):       
+        #st.write("**1. Find your Realized P/L Column:**")
+        #st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
         st.dataframe(recent_5, use_container_width=True)
         
         st.write("**Test the FIFO Math (Timeline Verification):**")
