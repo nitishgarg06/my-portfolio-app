@@ -385,16 +385,19 @@ with tab2:
     st.subheader("📊 Portfolio Allocation")
     
     # Isolate the Open Positions data
+    latest_year = df_master['YearSource'].dropna().max()
     df_positions = df_master[
         (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
-        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA')
+        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA') &
+        (df_master['D'].astype(str).str.strip().str.upper() == 'STOCKS') &
+        (df_master['YearSource'] == latest_year)
     ].copy()
     
     if not df_positions.empty:
-        # Assuming Ticker is in Col F and Current Value is in Col M
+        # Assuming Ticker is in Col F and Invested Value is in Col J
         # (We may need to adjust these letters based on your specific IBKR layout!)
-        chart_data = df_positions[['F', 'M']].copy() 
-        chart_data.columns = ['Ticker', 'Value']
+        chart_data = df_positions[['F', 'J']].copy() 
+        chart_data.columns = ['Ticker', 'Invested']
         
         # Convert values to numbers and filter out $0 positions
         chart_data['Value'] = pd.to_numeric(chart_data['Value'], errors='coerce').fillna(0)
@@ -405,7 +408,7 @@ with tab2:
             fig = px.pie(
                 chart_data, 
                 names='Ticker', 
-                values='Value', 
+                values='Invested', 
                 hole=0.4, # This creates the modern "Donut" look
             )
             # Format the labels to show Ticker and Percentage inside the chart
