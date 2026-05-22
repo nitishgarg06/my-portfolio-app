@@ -401,7 +401,7 @@ with tab2:
         
         # Convert values to numbers and filter out $0 positions
         chart_data['Invested'] = pd.to_numeric(chart_data['Invested'], errors='coerce').fillna(0)
-        chart_data = chart_data[chart_data['Value'] > 0]
+        chart_data = chart_data[chart_data['Invested'] > 0]
         
         if not chart_data.empty:
             # Build the interactive Donut Chart
