@@ -429,8 +429,8 @@ with tab1:
 
     # --- TEMPORARY DEBUG EXPANDER ---
     with st.expander("🕵️ Debug: P/L Columns & FIFO Testing"):       
-        #st.write("**1. Find your Realized P/L Column:**")
-        #st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
+        st.write("**1. Find your Realized P/L Column:**")
+        st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
         st.dataframe(recent_5, use_container_width=True)
         
         st.write("**Test the FIFO Math (Timeline Verification):**")
