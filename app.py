@@ -333,6 +333,18 @@ with tab1:
     ]
     st.dataframe(debug_df, use_container_width=True)
 
+# --- DIAGNOSTIC X-RAY 2.0 ---
+    st.divider()
+    st.subheader("🕵️ Debugging: Raw Deposits & Dividends")
+    
+    st.write("**Deposits & Withdrawals Section:**")
+    debug_dep = df_master[df_master['A'].astype(str).str.strip().str.upper() == "DEPOSITS & WITHDRAWALS"]
+    st.dataframe(debug_dep, use_container_width=True)
+    
+    st.write("**Dividends Section:**")
+    debug_div = df_master[df_master['A'].astype(str).str.strip().str.upper() == "DIVIDENDS"]
+    st.dataframe(debug_div, use_container_width=True)
+
 
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
