@@ -24,7 +24,7 @@ def load_and_process_data():
         df = conn.read(
             worksheet=yr, 
             header=None, 
-            names=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            names=list("ABCDEFGHIJKLMN")
         )
         
         if df is not None and not df.empty:
@@ -387,7 +387,7 @@ with tab1:
                 formatted_units = f"{units:.4f}"
             
             icon = "📈" if action == "BOUGHT" else "📉"
-            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **${total_val:,.2f}** (Avg price: **${avg_price:,.2f}**)"
+            base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
             
             if action == "SOLD":
                 # Assuming 'N' is your correct Realized P/L column based on our previous step!
@@ -406,20 +406,20 @@ with tab1:
                     # The Split Scenario (No more "Mixed Term"!)
                     st.markdown(
                         f"{base_text}<br>"
-                        f"↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**<br>"
+                        f"↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**<br>"
                         f"&nbsp;&nbsp;&nbsp;&nbsp;• *{lt_display} units Long Term*<br>"
                         f"&nbsp;&nbsp;&nbsp;&nbsp;• *{st_display} units Short Term*",
                         unsafe_allow_html=True
                     )
                 elif lt_units > 0:
                     # 100% Long Term
-                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                    st.markdown(f"{base_text}<br>↳ *Long Term {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
                 elif st_units > 0:
                     # 100% Short Term
-                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                    st.markdown(f"{base_text}<br>↳ *Short Term {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
                 else:
                     # Fallback
-                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
+                    st.markdown(f"{base_text}<br>↳ *Realized {pl_type}:* **\${abs(realized_pl):,.2f}**", unsafe_allow_html=True)
             else:
                 st.markdown(base_text, unsafe_allow_html=True)
                 
@@ -428,12 +428,8 @@ with tab1:
         st.info("No recent stock trades found.")
 
     # --- TEMPORARY DEBUG EXPANDER ---
-    with st.expander("🕵️ Debug: P/L Columns & FIFO Testing"):
-        st.write("**1. Find your Realized P/L Column:**")
-        st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
-        st.dataframe(recent_5, use_container_width=True)
-        
-        st.write("**2. Test the FIFO Math (Timeline Verification):**")
+    with st.expander("🕵️ Debug: P/L Columns & FIFO Testing"):       
+        st.write("**Test the FIFO Math (Timeline Verification):**")
         st.write("Type a ticker you recently sold to see your exact chronological buy/sell history. You can manually verify if the gap between your buys and the recent sell is > 365 days.")
         
         test_ticker = st.text_input("Enter Ticker to test (e.g., AAPL):").strip().upper()
