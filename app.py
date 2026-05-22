@@ -366,6 +366,16 @@ with tab2:
     forex_inventory = get_fifo_inventory(df_master, asset_category="Forex")
     render_holdings_table(forex_inventory, is_stock=False)
 
+    
+    # TEMPORARY: Check the first 3 rows of Open Positions to verify columns
+    st.write("DEBUG: Open Positions Row Snippet")
+    debug_positions = df_master[
+        (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
+        (df_master['B'].astype(str).str.strip().str.upper() == 'DATA')
+    ].head(3)
+    st.dataframe(debug_positions)
+    
+    
     # --- PORTFOLIO ALLOCATION CHART ---
     st.divider()
     st.subheader("📊 Portfolio Allocation")
