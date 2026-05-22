@@ -393,7 +393,7 @@ with tab1:
             
             if action == "SOLD":
                 # Use our exact column 'O' for the generic Realized P/L
-                realized_pl = float(pd.to_numeric(row.get('O', 0), errors='coerce'))
+                realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
                 # Run the Time Machine function to see how long you held it!
