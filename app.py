@@ -230,9 +230,11 @@ with tab1:
     if view_choice_1 == "Lifetime":
         df_single_year = df_master.copy()
         single_year_label = "Lifetime"
+        gains_title = "Realized Gains & Losses (Lifetime Total)"
     else:
         df_single_year = df_master[df_master['YearSource'] == view_choice_1].copy()
         single_year_label = f"In {view_choice_1}"
+        gains_title = f"Realized Gains & Losses ({view_choice_1} Only)"
         
     st.header(f"Portfolio Summary (Up to {view_choice_1})")
     
