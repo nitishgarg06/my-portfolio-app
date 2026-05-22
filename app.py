@@ -45,19 +45,25 @@ def load_and_process_data():
     return full_df
 
 # Helper function to extract summary metrics
-def get_metric(df, col_to_sum, col_A, col_B=None, col_C=None, col_D=None, col_E=None):
-    if df.empty: return 0.0
-    mask = (df['A'].astype(str).str.strip() == col_A)
-    if col_B: mask &= (df['B'].astype(str).str.strip() == col_B)
-    if col_C: mask &= (df['C'].astype(str).str.strip() == col_C)
-    if col_D: mask &= (df['D'].astype(str).str.strip() == col_D)
-    if col_E: mask &= (df['E'].astype(str).str.strip() == col_E)
+def get_metric(df, target_col, section_name, **kwargs):
+    """
+    Dynamically sums a target column based on the section name in Col A 
+    and any other column filters passed in (e.g., col_B="Data", col_C="Stocks").
+    """
+    # 1. Base filter: Match the exact section name in Column A
+    mask = df['A'].astype(str).str.strip().str.upper() == section_name.upper()
     
-    # FIX: Convert to numbers ON THE FLY just for this calculation
-    target_data = df.loc[mask, col_to_sum].astype(str).replace(r'[$,\s()]', '', regex=True)
-    numeric_data = pd.to_numeric(target_data, errors='coerce').fillna(0.0)
-    
-    return float(numeric_data.sum())
+    # 2. Dynamic filter: Apply any extra column filters passed via kwargs
+    for key, value in kwargs.items():
+        if key.startswith('col_'):
+            col_letter = key.split('_')[1] # Extracts 'B' from 'col_B'
+            mask &= df[col_letter].astype(str).str.strip().str.upper() == str(value).upper()
+            
+    # 3. Sum the matched rows in the target column
+    try:
+        return pd.to_numeric(df.loc[mask, target_col], errors='coerce').fillna(0).sum()
+    except Exception:
+        return 0.0
 
 def get_realized_row(df, asset_class):
     # Added col_B="Data" to strictly prevent double-counting the "Total" rows!
