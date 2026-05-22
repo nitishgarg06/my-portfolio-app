@@ -414,6 +414,60 @@ with tab2:
     else:
         st.info("No 'Open Positions' data found in this report.")
 
+    # --- PORTFOLIO ALLOCATION CHART (FROM LIVE INVENTORY) ---
+    if stock_inventory:
+        st.divider()
+        st.subheader("📊 Portfolio Allocation")
+        
+        # 1. Process the live inventory into a chart-ready list
+        chart_rows = []
+        for ticker, info in stock_inventory.items():
+            units = info.get('units', 0.0)
+            avg_price = info.get('avg_price', 0.0)
+            
+            # Skip positions that have been completely closed out
+            if units <= 0:
+                continue
+                
+            # Calculate Cost Basis (Amount Invested)
+            cost_basis = units * avg_price
+            
+            # Fetch Current Market Price if available, otherwise fall back to cost
+            # (If your inventory dict tracks 'current_price', use it here; otherwise we default to cost)
+            current_price = info.get('current_price', avg_price)
+            current_value = units * current_price
+            
+            chart_rows.append({
+                "Ticker": ticker,
+                "Amount Invested": cost_basis,
+                "Current Value": current_value
+            })
+            
+        df_chart_source = pd.DataFrame(chart_rows)
+        
+        if not df_chart_source.empty:
+            # 2. Add the UI toggle button
+            allocation_metric = st.radio(
+                "View Allocation By:",
+                ["Current Value", "Amount Invested"],
+                horizontal=True
+            )
+            
+            # 3. Render the dynamic donut chart based on selection
+            fig = px.pie(
+                df_chart_source, 
+                names='Ticker', 
+                values=allocation_metric, 
+                hole=0.4
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No active holdings found to display in the chart.")
+    else:
+        st.info("Inventory is empty. Add trade data to view allocation.")
+
 # ------------------------------------------
 # TAB 3: FIFO CALCULATOR (LIFETIME ONLY)
 # ------------------------------------------
