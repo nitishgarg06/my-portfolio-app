@@ -422,7 +422,7 @@ with tab1:
         test_ticker = st.text_input("Enter Ticker to test (e.g., AAPL):").strip().upper()
         if test_ticker:
             fifo_test_df = stock_trades[stock_trades['F'].str.strip().str.upper() == test_ticker]
-            st.dataframe(fifo_test_df[['Trade_Date', 'F', 'H', 'M', 'O']], use_container_width=True)
+            st.dataframe(fifo_test_df, use_container_width=True)
         
 # ------------------------------------------
 # TAB 2: MY HOLDINGS (LIFETIME ONLY)
