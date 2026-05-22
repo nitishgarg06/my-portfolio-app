@@ -54,8 +54,8 @@ def load_and_process_data():
                 errors='coerce'
             ).fillna(0.0)
     
-    # Drop rows without a valid Trade Date (cleans up messy headers/footers)
-    full_df = full_df.dropna(subset=['Trade_Date']).sort_values('Trade_Date').reset_index(drop=True)
+    # Safe sorting that doesn't delete non-trade rows
+    full_df = full_df.sort_values('Trade_Date').reset_index(drop=True)
     
     return full_df
 
@@ -436,8 +436,8 @@ with tab1:
 
     # --- TEMPORARY DEBUG EXPANDER ---
     with st.expander("🕵️ Logs: P/L Columns & FIFO"):       
-        st.write("**1. Find your Realized P/L Column:**")
-        st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
+        #st.write("**1. Find your Realized P/L Column:**")
+        #st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
         st.dataframe(recent_5, use_container_width=True)
         
         st.write("**Test the FIFO Math (Timeline Verification):**")
