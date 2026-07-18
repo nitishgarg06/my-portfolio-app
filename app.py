@@ -5,7 +5,7 @@ import yfinance as yf
 import plotly.express as px
 
 # --- SINGLE SOURCE OF TRUTH FOR YEARS ---
-PORTFOLIO_YEARS = ["FY24", "FY25", "FY26"]
+PORTFOLIO_YEARS = ["FY24", "FY25", "FY26", "F27"]
 
 st.set_page_config(layout="wide", page_title="IBKR Portfolio Dashboard")
 
