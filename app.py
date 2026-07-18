@@ -10,6 +10,26 @@ PORTFOLIO_YEARS = ["FY24", "FY25", "FY26"]
 st.set_page_config(layout="wide", page_title="IBKR Portfolio Dashboard")
 
 # ==========================================
+# 0. STOCK SPLIT ENGINE
+# ==========================================
+@st.cache_data(ttl=86400) # Cache for 24 hours to prevent slow load times
+def fetch_stock_splits(tickers):
+    splits_dict = {}
+    for ticker in tickers:
+        try:
+            sp = yf.Ticker(ticker).splits
+            if sp is not None and not sp.empty:
+                sp = sp[sp > 0] # Filter out bad 0 ratios
+                # Convert to a list of dicts with timezone-naive dates for easy comparison
+                splits_dict[ticker] = [
+                    {'date': pd.to_datetime(d).replace(tzinfo=None), 'ratio': float(r)} 
+                    for d, r in sp.items()
+                ]
+        except Exception:
+            pass
+    return splits_dict
+
+# ==========================================
 # 1. DATA LOADING & PROCESSING
 # ==========================================
 @st.cache_data(ttl=600)
@@ -100,25 +120,43 @@ def get_realized_row(df, asset_class):
 # 2. FIFO INVENTORY ENGINE
 # ==========================================
 def get_fifo_inventory(df, ticker=None, asset_category=None):
-    """Rebuilds the open lots by replaying trade history."""
+    """Rebuilds the open lots by replaying trade history, accounting for splits."""
     mask = (df['A'].astype(str).str.strip().str.upper() == "TRADES") & \
            (df['B'].astype(str).str.strip().str.upper() == "DATA")
     
-    # NEW: Filter by Column D if an asset category is provided
+    # Filter by Column D if an asset category is provided
     if asset_category:
         mask &= (df['D'].astype(str).str.strip().str.upper() == asset_category.upper())
         
-    trades = df[mask]
+    trades = df[mask].copy()
+    trades['Trade_Date'] = pd.to_datetime(trades['Trade_Date'], errors='coerce')
     
     if ticker:
         trades = trades[trades['F'].astype(str).str.strip().str.upper() == ticker.upper()]
         
+    # Fetch splits for all involved tickers
+    unique_tickers = [t for t in trades['F'].astype(str).str.strip().str.upper().unique() if t and t != 'NAN']
+    splits_map = fetch_stock_splits(tuple(unique_tickers))
+    
     inventory_map = {}
+    last_date_map = {}
     
     for _, row in trades.iterrows():
         t = str(row['F']).strip().upper()
+        trade_date = row['Trade_Date']
+        
         if t not in inventory_map:
             inventory_map[t] = []
+            last_date_map[t] = pd.Timestamp.min
+            
+        # Chronologically apply splits that occurred before this trade
+        if pd.notna(trade_date):
+            if t in splits_map:
+                for split in splits_map[t]:
+                    if last_date_map[t] < split['date'] <= trade_date:
+                        for lot in inventory_map[t]:
+                            lot['qty'] *= split['ratio']
+            last_date_map[t] = trade_date
             
         qty = round(float(row['H']), 8)
         basis = float(row['M'])
@@ -135,6 +173,16 @@ def get_fifo_inventory(df, ticker=None, asset_category=None):
                     inventory_map[t][0]['qty'] -= qty_to_close
                     inventory_map[t][0]['basis'] *= fraction
                     qty_to_close = 0
+
+    # Apply any final splits that occurred between the last trade and today
+    now = pd.Timestamp.now().replace(tzinfo=None)
+    for t in list(inventory_map.keys()):
+        if t in splits_map:
+            for split in splits_map[t]:
+                if last_date_map[t] < split['date'] <= now:
+                    for lot in inventory_map[t]:
+                        lot['qty'] *= split['ratio']
+            last_date_map[t] = now
                     
     return inventory_map
 
@@ -145,14 +193,6 @@ df_master = load_and_process_data()
 
 st.title("📈 IBKR Portfolio Tracker")
 
-# --- GLOBAL FILTER (CUMULATIVE) ---
-#view_choice = st.selectbox("Select Financial Period (Cumulative)", ["Lifetime", "FY26", "FY25", "FY24"])
-#year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
-
-# Filter data cumulatively
-#current_rank = year_order[view_choice]
-#df_view = df_master[df_master['YearSource'].map(year_order) <= current_rank]
-
 # --- DYNAMIC UI PREP ---
 # 1. Automatically generate the dropdown list (e.g., ["Lifetime", "FY26", "FY25", "FY24"])
 dropdown_options = ["Lifetime"] + list(reversed(PORTFOLIO_YEARS))
@@ -160,11 +200,6 @@ dropdown_options = ["Lifetime"] + list(reversed(PORTFOLIO_YEARS))
 # 2. Automatically assign cumulative math values (FY24=1, FY25=2, FY26=3, Lifetime=99)
 year_order = {yr: i+1 for i, yr in enumerate(PORTFOLIO_YEARS)}
 year_order["Lifetime"] = 99
-
-#tab1, tab2, tab3 = st.tabs(["📊 Summary", "💼 My Holdings", "🧮 FIFO Calculator"])
-
-# Create Tabs
-#year_order = {"FY24": 1, "FY25": 2, "FY26": 3, "Lifetime": 99}
 
 # Helper function to draw the tables for Stocks and Forex
 def render_holdings_table(inventory_data, is_stock=True):
@@ -272,7 +307,7 @@ with tab1:
     cur_dep_aud = get_metric(df_single_year, 'F', 'Deposits & Withdrawals', col_B='Data', col_C='Total')
     
     cum_div_usd = get_metric(df_view_1, 'F', 'Dividends', col_B='Data', col_C='Total')
-    cur_div_usd = get_metric(df_single_year, 'F', 'Dividends', col_B='Data', col_C='Total')
+    cur_div_usd = get_single_year_div_usd = get_metric(df_single_year, 'F', 'Dividends', col_B='Data', col_C='Total')
     
     cum_div_aud = get_metric(df_view_1, 'F', 'Dividends', col_C='Total in AUD')
     cur_div_aud = get_metric(df_single_year, 'F', 'Dividends', col_C='Total in AUD')
@@ -297,8 +332,6 @@ with tab1:
         c4.metric(f"Dividends {single_year_label} (USD)", f"${cur_div_usd:,.2f}", f"Cumulative: ${cum_div_usd:,.2f}", delta_color="off")
         c5.metric(f"Dividends {single_year_label} (AUD)", f"${cur_div_aud:,.2f}", f"Cumulative: ${cum_div_aud:,.2f}", delta_color="off")
 
-    # (Your Realized Gains table code stays exactly the same here, it will automatically use the df_single_year we defined above!)
-
     # Realized Gains Table
     st.divider()
     st.subheader(gains_title)
@@ -310,7 +343,6 @@ with tab1:
         "Total Assets": get_realized_row(df_single_year, "Total (All Assets)")
     }
     
-    # 1. Define our traffic light color rules
     def color_gains_losses(val):
         if isinstance(val, (int, float)):
             if val > 0:
@@ -321,13 +353,12 @@ with tab1:
                 return 'color: #6c757d;' # Neutral Grey
         return ''
 
-    # 2. Build the table, apply the $ formatting, AND apply the new colors
     df_realized = pd.DataFrame(realized_data).set_index("Metric")
     
     st.dataframe(
         df_realized.style
         .format("${:,.2f}")
-        .map(color_gains_losses), # This line paints the cells!
+        .map(color_gains_losses), 
         use_container_width=True
     )
 
@@ -344,18 +375,33 @@ with tab1:
     if not stock_trades.empty:
         stock_trades = stock_trades.sort_values(by='Trade_Date')
         
-        # --- FIFO HELPER FUNCTION (UNIT SPLIT ONLY) ---
+        # --- FIFO HELPER FUNCTION (NOW ACCOUNTS FOR SPLITS) ---
         def get_term_breakdown(target_ticker, target_sell_date, df_all_trades):
             history = df_all_trades[
                 (df_all_trades['F'].str.strip() == target_ticker) & 
                 (df_all_trades['Trade_Date'] <= target_sell_date)
-            ]
+            ].copy()
+            
+            history['Trade_Date'] = pd.to_datetime(history['Trade_Date'], errors='coerce')
+            splits_map = fetch_stock_splits((target_ticker,))
+            
             buy_queue = []
             st_units_sold, lt_units_sold = 0.0, 0.0
+            last_date = pd.Timestamp.min
             
             for _, row in history.iterrows():
                 units = float(row['H'])
                 trade_date = row['Trade_Date']
+                
+                # Check for splits before applying this trade
+                if pd.notna(trade_date):
+                    if target_ticker in splits_map:
+                        for split in splits_map[target_ticker]:
+                            if last_date < split['date'] <= trade_date:
+                                for lot in buy_queue:
+                                    lot['units'] *= split['ratio']
+                    last_date = trade_date
+                
                 if units > 0:
                     buy_queue.append({'date': trade_date, 'units': units})
                 elif units < 0:
@@ -396,7 +442,6 @@ with tab1:
             base_text = f"**{icon} {action}:** {formatted_units} units of **{ticker}** on {date_str} for **\${total_val:,.2f}** (Avg price: **\${avg_price:,.2f}**)"
             
             if action == "SOLD":
-                # NOW PULLING DIRECTLY FROM COLUMN N!
                 realized_pl = float(pd.to_numeric(row.get('N', 0), errors='coerce'))
                 pl_type = "Profit" if realized_pl >= 0 else "Loss"
                 
@@ -426,12 +471,7 @@ with tab1:
     else:
         st.info("No recent stock trades found.")
 
-    # --- TEMPORARY DEBUG EXPANDER ---
     with st.expander("🕵️ Logs: P/L Columns & FIFO"):       
-        #st.write("**1. Find your Realized P/L Column:**")
-        #st.write("Scroll to the right in this table. Find the column with your profit numbers, note the letter, and change the 'O' in your code to match!")
-        #st.dataframe(recent_5, use_container_width=True)
-        
         st.write("**Check the FIFO Math (Timeline Verification):**")
         st.write("Type a ticker you recently sold to see your exact chronological buy/sell history. You can manually verify if the gap between your buys and the recent sell is > 365 days.")
         
@@ -448,14 +488,12 @@ with tab2:
     
     # --- RENDER STOCKS ---
     st.subheader("📈 Stocks")
-    # Changed from df_view to df_master so it ALWAYS uses lifetime data
     stock_inventory = get_fifo_inventory(df_master, asset_category="Stocks")
     render_holdings_table(stock_inventory, is_stock=True)
 
     # --- PORTFOLIO ALLOCATION CHARTS (SIDE-BY-SIDE) ---
     st.subheader("📊 Portfolio Allocation")
     
-    # Isolate the Open Positions data
     latest_year = df_master['YearSource'].dropna().max()
     df_positions = df_master[
         (df_master['A'].astype(str).str.strip().str.upper() == 'OPEN POSITIONS') & 
@@ -465,22 +503,17 @@ with tab2:
     ].copy()
     
     if not df_positions.empty:
-        # Pull Ticker (Col F), Invested Value (Col J), and Current Market Value (Col M)
         chart_data = df_positions[['F', 'J', 'L']].copy() 
         chart_data.columns = ['Ticker', 'Invested', 'Current_Value']
         
-        # Convert values to numbers and fill missing ones with 0
         chart_data['Invested'] = pd.to_numeric(chart_data['Invested'], errors='coerce').fillna(0)
         chart_data['Current_Value'] = pd.to_numeric(chart_data['Current_Value'], errors='coerce').fillna(0)
         
-        # Keep rows that have valid data in either column
         chart_data = chart_data[(chart_data['Invested'] > 0) | (chart_data['Current_Value'] > 0)]
         
         if not chart_data.empty:
-            # 1. CREATE SIDE-BY-SIDE COLUMNS
             left_chart_col, right_chart_col = st.columns(2)
             
-            # 2. LEFT COLUMN: AMOUNT INVESTED
             with left_chart_col:
                 st.markdown("<h4 style='text-align: center;'>By Amount Invested (Cost)</h4>", unsafe_allow_html=True)
                 fig_invested = px.pie(
@@ -493,7 +526,6 @@ with tab2:
                 fig_invested.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
                 st.plotly_chart(fig_invested, use_container_width=True)
                 
-            # 3. RIGHT COLUMN: CURRENT MARKET VALUE
             with right_chart_col:
                 st.markdown("<h4 style='text-align: center;'>By Current Market Value</h4>", unsafe_allow_html=True)
                 fig_current = px.pie(
@@ -516,32 +548,25 @@ with tab2:
 with tab3:
     st.header("🧮 FIFO Scenario Calculator")
     
-    # Using df_master here as well to ensure total accuracy
     active_inventory = get_fifo_inventory(df_master, asset_category="Stocks")
-    
-    # ... (Keep the rest of your Tab 3 Calculator code exactly as it is) ...
     active_tickers = [t for t, lots in active_inventory.items() if sum(l['qty'] for l in lots) > 0.001]
     
     if not active_tickers:
         st.warning("No active holdings available to sell.")
     else:
-        # UI: Selection
         c_sel1, c_sel2 = st.columns([1, 2])
         selected_ticker = c_sel1.selectbox("Select Stock to Sell:", sorted(active_tickers))
         
-        # Get lots for selected stock
         lots = active_inventory[selected_ticker]
         total_units = sum(l['qty'] for l in lots)
         total_basis = sum(l['basis'] for l in lots)
         
         c_sel2.info(f"**Current Holding Profile:** \n\n {total_units:.4f} Units | Total Cost Basis: ${total_basis:,.2f} | Avg Cost: ${(total_basis/total_units):,.2f}")
         
-        # UI: Sell Settings
         st.subheader("1. Configure Sale Amount")
         sell_mode = st.radio("Define sell amount by:", ["Units", "Percentage (%)"], horizontal=True)
         
         if sell_mode == "Units":
-            # Streamlit sliders allow manual typing! Just click the number on the right.
             units_to_sell = st.slider(
                 "Units to Sell (Click the number on the right to type an exact amount):", 
                 0.0, float(total_units), 
@@ -558,7 +583,6 @@ with tab3:
             )
             units_to_sell = (percent_to_sell / 100) * total_units
 
-        # UI: Target Mode
         st.subheader("2. Pricing Strategy")
         use_target_profit = st.checkbox("Calculate based on a Target Profit %", value=True)
         
@@ -572,11 +596,9 @@ with tab3:
                 st.error("Could not fetch live price. Defaulting to $0.")
                 live_price = 0.0
 
-        # --- EXECUTE FIFO CALCULATION ---
         if units_to_sell > 0:
             st.divider()
             
-            # Slice the FIFO queue
             temp_sell_qty = units_to_sell
             slice_cost_basis = 0.0
             
@@ -588,7 +610,6 @@ with tab3:
 
             st.subheader(f"Results for selling {units_to_sell:.4f} units ({percent_to_sell:.1f}%)")
             
-            # Case 1: Target Profit Goal
             if use_target_profit:
                 target_revenue = slice_cost_basis * (1 + (target_profit/100))
                 target_price_per_unit = target_revenue / units_to_sell
@@ -598,7 +619,6 @@ with tab3:
                 m2.metric("Total Revenue Target", f"${target_revenue:,.2f}")
                 m3.metric("Projected Profit", f"${target_revenue - slice_cost_basis:,.2f}")
                 
-            # Case 2: Sell at Market Price
             else:
                 projected_revenue = units_to_sell * live_price
                 projected_profit = projected_revenue - slice_cost_basis
@@ -612,7 +632,6 @@ with tab3:
                     delta=f"{(projected_profit/slice_cost_basis)*100 if slice_cost_basis > 0 else 0:.1f}% Return"
                 )
 
-            # --- REMAINING POSITION ---
             st.markdown("### 📋 Remaining Position Profile")
             rem_units = total_units - units_to_sell
             rem_basis = total_basis - slice_cost_basis
